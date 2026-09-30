@@ -1,0 +1,33 @@
+name: Investigar estrategias
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/**', 'www/js/strategy.js']
+
+permissions:
+  contents: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backtest con datos reales de Binance
+        run: |
+          echo '{"type":"module"}' > /tmp/pkg.json
+          cp /tmp/pkg.json www/js/package.json
+          node tools/research.mjs
+          rm www/js/package.json
+          cat research/results.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar resultados en el repositorio
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add research/
+          git commit -m "Resultados de investigación [skip ci]" || echo "sin cambios"
+          git pull --rebase origin main && git push
