@@ -35,6 +35,14 @@ export function floorStep(value, step) {
   return n.toFixed(decimalsOf(step));
 }
 
+// Redondea hacia arriba al múltiplo de step
+export function ceilStep(value, step) {
+  const st = +step;
+  if (!(st > 0)) return String(value);
+  const n = Math.ceil(value / st - 1e-9) * st;
+  return n.toFixed(decimalsOf(step));
+}
+
 // Redondea al tick de precio más cercano
 export function roundTick(value, tick) {
   const t = +tick;
@@ -54,6 +62,8 @@ export class Binance {
     this.testnet = testnet;
     this.offset = 0; // diferencia reloj local vs servidor
     this._info = new Map();
+    this.market = 'spot';
+    this.paths = { time: '/api/v3/time', klines: '/api/v3/klines', t24: '/api/v3/ticker/24hr' };
   }
 
   get base() { return this.testnet ? BASE_URLS.testnet : BASE_URLS.real; }
@@ -91,7 +101,7 @@ export class Binance {
 
   async syncTime() {
     const t0 = Date.now();
-    const { serverTime } = await this._req('GET', '/api/v3/time');
+    const { serverTime } = await this._req('GET', this.paths.time);
     const t1 = Date.now();
     this.offset = serverTime - Math.round((t0 + t1) / 2);
     return this.offset;
@@ -101,7 +111,7 @@ export class Binance {
 
   // ---------- Datos públicos ----------
   async klines(symbol, interval, limit = 200) {
-    const rows = await this._req('GET', '/api/v3/klines', { symbol, interval, limit });
+    const rows = await this._req('GET', this.paths.klines, { symbol, interval, limit });
     return rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5], ct: r[6] }));
   }
 
@@ -110,7 +120,7 @@ export class Binance {
     return +d.price;
   }
 
-  ticker24h(symbol) { return this._req('GET', '/api/v3/ticker/24hr', { symbol }); }
+  ticker24h(symbol) { return this._req('GET', this.paths.t24, { symbol }); }
 
   async symbolInfo(symbol) {
     if (this._info.has(symbol)) return this._info.get(symbol);

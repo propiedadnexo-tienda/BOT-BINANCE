@@ -108,3 +108,76 @@ export function backtest(candles, cfg) {
     to: candles[candles.length - 1]?.t,
   };
 }
+
+// ---------------- Futuros (long + short) ----------------
+
+// Cruce puro en la vela i: 'UP' (rápida cruza hacia arriba) | 'DOWN' | null
+export function crossAt(ind, i) {
+  if (i < 1) return null;
+  const f0 = ind.fast[i - 1], s0 = ind.slow[i - 1], f1 = ind.fast[i], s1 = ind.slow[i];
+  if ([f0, s0, f1, s1].some(v => v == null)) return null;
+  if (f0 <= s0 && f1 > s1) return 'UP';
+  if (f0 >= s0 && f1 < s1) return 'DOWN';
+  return null;
+}
+
+// ¿Se permite abrir esta dirección según el RSI?
+export function rsiAllows(side, rsiVal, cfg) {
+  if (rsiVal == null) return true;
+  return side === 'LONG' ? rsiVal < cfg.rsiMax : rsiVal > cfg.rsiMin;
+}
+
+export function slTpPrices(side, entry, cfg) {
+  const d = side === 'LONG' ? 1 : -1;
+  return { sl: entry * (1 - d * cfg.slPct / 100), tp: entry * (1 + d * cfg.tpPct / 100) };
+}
+
+// Backtest long/short con apalancamiento. amount = margen por operación.
+// Cruce alcista: cierra short y abre long (si RSI lo permite). Cruce bajista: al revés.
+export function backtestFutures(candles, cfg) {
+  const ind = computeIndicators(candles, cfg);
+  const fee = (cfg.feePct ?? 0.05) / 100;
+  const notional = cfg.amount * cfg.leverage;
+  const trades = [];
+  let pos = null, equity = 0, peak = 0, maxDD = 0;
+
+  const close = (exit, t, reason) => {
+    const d = pos.side === 'LONG' ? 1 : -1;
+    const pnl = notional * d * (exit / pos.entry - 1) - notional * fee - notional * (exit / pos.entry) * fee;
+    trades.push({ side: pos.side, entryTime: pos.t, exitTime: t, entry: pos.entry, exit, reason, pnl, pnlPct: pnl / cfg.amount * 100 });
+    equity += pnl; peak = Math.max(peak, equity); maxDD = Math.max(maxDD, peak - equity);
+    pos = null;
+  };
+
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    if (pos) {
+      if (pos.side === 'LONG') {
+        if (c.l <= pos.sl) { close(Math.min(c.o, pos.sl), c.t, 'SL'); continue; }
+        if (c.h >= pos.tp) { close(Math.max(c.o, pos.tp), c.t, 'TP'); continue; }
+      } else {
+        if (c.h >= pos.sl) { close(Math.max(c.o, pos.sl), c.t, 'SL'); continue; }
+        if (c.l <= pos.tp) { close(Math.min(c.o, pos.tp), c.t, 'TP'); continue; }
+      }
+    }
+    const x = crossAt(ind, i);
+    if (!x) continue;
+    const want = x === 'UP' ? 'LONG' : 'SHORT';
+    if (pos && pos.side !== want) close(c.c, c.t, 'Cruce');
+    if (!pos && rsiAllows(want, ind.rsi[i], cfg)) {
+      pos = { side: want, entry: c.c, t: c.t, ...slTpPrices(want, c.c, cfg) };
+    }
+  }
+
+  const wins = trades.filter(t => t.pnl > 0).length;
+  const first = candles[0]?.c, last = candles[candles.length - 1]?.c;
+  return {
+    trades, count: trades.length, wins,
+    longs: trades.filter(t => t.side === 'LONG').length,
+    shorts: trades.filter(t => t.side === 'SHORT').length,
+    winRate: trades.length ? wins / trades.length * 100 : 0,
+    totalPnl: equity, totalPct: equity / cfg.amount * 100, maxDD,
+    openPosition: pos, holdPct: first ? (last / first - 1) * 100 : 0,
+    from: candles[0]?.t, to: candles[candles.length - 1]?.t,
+  };
+}
