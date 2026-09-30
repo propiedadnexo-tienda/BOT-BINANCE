@@ -148,10 +148,20 @@
         <div class="row between"><h3>Panel de bots</h3><span id="mbPill" class="pill">Apagados</span></div>
         <div class="grid2" id="mbGrid" style="gap:8px;margin-top:10px"></div>
         <div class="grid2">
-          <label>Pérdida máx. del día (todos los bots, USDT)<input id="mbMaxLoss" type="number" min="0" step="any"></label>
+          <label>Pérdida máx. del día (todos, USDT)<input id="mbMaxLoss" type="number" min="0" step="any"></label>
+          <label>Máx. posiciones abiertas<input id="mbMaxOpen" type="number" min="1" max="10"></label>
           <label>Revisar cada (seg)<input id="mbTick" type="number" min="10"></label>
         </div>
         <button id="mbStart" class="primary wide">▶ Iniciar todos</button>
+      </div>
+      <div class="card fut-only plan">
+        <h3>🧠 Plan de Claude</h3>
+        <p class="hint">10 bots en BTC, ETH, SOL, BNB y XRP (Long + Short) con <b>rebote a la media en velas de 4 h</b>, filtro de tendencia EMA 200 y stop-loss en Binance. Arriesga el 1 % del saldo por operación. Es la única estrategia que ganó en los meses de prueba <i>y</i> en los de validación con datos reales (ene 2025 – sep 2026).</p>
+        <div class="row gap">
+          <button id="mbPlan" class="primary grow">🧠 Aplicar plan</button>
+          <button id="mbTestPlan" class="ghost grow">🧪 Probar plan</button>
+        </div>
+        <div id="mbPlanOut"></div>
       </div>
       <div class="row gap fut-only" style="margin:0 0 12px">
         <button id="mbAdd" class="ghost grow">＋ Agregar bot</button>
@@ -238,17 +248,30 @@
         <button data-v="LONG" class="on buy">📈 Long (gana si sube)</button>
         <button data-v="SHORT" class="sell">📉 Short (gana si baja)</button>
       </div>
+      <label>Estrategia<select id="edStrat">
+        <option value="meanrev">Rebote a la media (recomendada)</option>
+        <option value="breakout">Ruptura + trailing (sigue tendencias)</option>
+        <option value="ema">Cruce de medias</option>
+      </select></label>
       <form id="edForm" class="grid2">
-        <label>Velas<select name="interval"><option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></label>
-        <label>Margen (USDT)<input name="amount" type="number" step="any" min="1"></label>
+        <label>Velas<select name="interval"><option>15m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
+        <label>Riesgo por operación (% del saldo)<input name="riskPct" type="number" step="0.1" min="0.1" max="5"></label>
+        <label>Margen máximo (USDT)<input name="amount" type="number" step="any" min="1"></label>
         <label>Apalancamiento (x)<input name="leverage" type="number" min="1" max="20"></label>
+        <label>Stop-loss (× ATR)<input name="slAtr" type="number" step="0.1" min="0.5"></label>
+        <label>Take-profit (× ATR, 0 = sin TP)<input name="tpAtr" type="number" step="0.1" min="0"></label>
+        <label>Filtro de tendencia (EMA, 0 = sin filtro)<input name="trendEma" type="number" min="0"></label>
         <label>Máx. operaciones/día<input name="maxTrades" type="number" min="1"></label>
-        <label>Stop-loss %<input name="slPct" type="number" step="any" min="0.1"></label>
-        <label>Take-profit %<input name="tpPct" type="number" step="any" min="0.1"></label>
-        <label>EMA rápida<input name="emaFast" type="number" min="2"></label>
-        <label>EMA lenta<input name="emaSlow" type="number" min="3"></label>
-        <label>Periodo RSI<input name="rsiPeriod" type="number" min="2"></label>
-        <label><span id="edRsiLbl">RSI máx. para abrir</span><input name="rsiLimit" type="number" min="-1" max="101"></label>
+        <label data-s="meanrev">Bandas: periodo<input name="bbN" type="number" min="5"></label>
+        <label data-s="meanrev">Bandas: desviaciones<input name="bbK" type="number" step="0.1" min="1"></label>
+        <label data-s="meanrev">RSI (Long ≤, Short ≥ 100−valor)<input name="rsiLimit" type="number" min="1" max="99"></label>
+        <label data-s="meanrev">Salir tras máx. velas<input name="maxBars" type="number" min="1"></label>
+        <label data-s="breakout">Entrar al romper N velas<input name="entryN" type="number" min="5"></label>
+        <label data-s="breakout">Salir al romper N velas<input name="exitN" type="number" min="3"></label>
+        <label data-s="breakout">Trailing (× ATR, 0 = no)<input name="trailAtr" type="number" step="0.1" min="0"></label>
+        <label data-s="ema">EMA rápida<input name="emaFast" type="number" min="2"></label>
+        <label data-s="ema">EMA lenta<input name="emaSlow" type="number" min="3"></label>
+        <label data-s="ema">Entrada<select name="entryMode"><option value="cross">Solo en el cruce</option><option value="trend">Ya, si la tendencia coincide</option></select></label>
       </form>
       <p class="hint" id="edInfo"></p>
       <div id="edBt"></div>

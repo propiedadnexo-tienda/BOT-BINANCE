@@ -3,9 +3,10 @@
 //   Bot LONG : abre long en el cruce alcista (si RSI < límite) y cierra en el cruce bajista.
 //   Bot SHORT: abre short en el cruce bajista (si RSI > límite) y cierra en el cruce alcista.
 // Cada posición lleva su propio stop-loss y take-profit en Binance (Algo Orders con su algoId).
-// Un límite de pérdida diaria GLOBAL detiene todos los bots.
+// Un límite de pérdida diaria GLOBAL detiene todos los bots y hay un máximo de posiciones abiertas a la vez.
+// La lógica de entrada/salida/stops/tamaño vive en strategy.js (la misma que usa el backtest).
 
-import { computeIndicators, crossAt, slTpPrices } from './indicators.js';
+import { indicators, candlesNeeded, entryBlock, exitSignal, stopsFor, sizeFor, trailStop } from './strategy.js';
 import { floorStep, ceilStep, roundTick } from './binance.js';
 import { fmt } from './bot.js';
 import { nameOf } from './names.js';
@@ -16,10 +17,28 @@ const today = () => new Date().toLocaleDateString('sv-SE');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const uid = () => Math.random().toString(36).slice(2, 8);
 
+// Valores por defecto = estrategia validada con datos reales (rebote a la media en 4h con filtro de tendencia)
 export const BOT_DEFAULTS = {
-  symbol: 'BTCUSDT', direction: 'LONG', interval: '15m', emaFast: 9, emaSlow: 21, rsiPeriod: 14,
-  rsiLimit: 70, amount: 100, leverage: 2, slPct: 1.5, tpPct: 3, maxTrades: 10, feePct: 0.05, enabled: true,
+  symbol: 'BTCUSDT', direction: 'LONG', interval: '4h', enabled: true,
+  strategy: 'meanrev', bbN: 20, bbK: 2, rsiPeriod: 14, rsiLimit: 50, trendEma: 200, maxBars: 30, cooldown: 2,
+  entryMode: 'cross', emaFast: 20, emaSlow: 50, maxExtAtr: 1.5, entryN: 20, exitN: 10,
+  stopMode: 'atr', slAtr: 2, tpAtr: 0, trailAtr: 0, slPct: 1.5, tpPct: 3,
+  sizeMode: 'risk', riskPct: 1, amount: 400, leverage: 5,
+  maxTrades: 3, feePct: 0.05,
 };
+
+export const STRATEGY_NAMES = { meanrev: 'Rebote a la media', breakout: 'Ruptura + trailing', ema: 'Cruce de medias' };
+
+// Plan de Claude: la única estrategia que ganó tanto en los meses de entrenamiento (ene 2025–mar 2026)
+// como en los de validación (abr–sep 2026) con datos reales de Binance Futuros.
+// 5 criptomonedas grandes × (Long + Short) = 10 bots. Riesgo 1 % del saldo por operación.
+export const PLAN_ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+export function buildPlan(balance) {
+  const bal = balance > 0 ? balance : 5000;
+  const bot = { ...BOT_DEFAULTS, amount: Math.max(50, Math.round(bal * 0.08)) };
+  const bots = PLAN_ASSETS.flatMap(symbol => ['LONG', 'SHORT'].map(direction => ({ ...bot, symbol, direction })));
+  return { bots, global: { maxOpen: 6, maxDailyLoss: Math.round(bal * 0.03), tickSec: 30 } };
+}
 
 // Margen mínimo (USDT) para que la cantidad redondeada supere el mínimo del par, con 3 % de holgura
 export function minMargin(info, price, leverage) {
@@ -31,7 +50,7 @@ export const botLabel = b => `${b.direction === 'LONG' ? '📈' : '📉'} ${name
 
 function defaultState() {
   return {
-    running: false, global: { tickSec: 20, maxDailyLoss: 50 },
+    running: false, global: { tickSec: 20, maxDailyLoss: 200, maxOpen: 5 },
     bots: [], trades: [], log: [], day: today(), pnlToday: 0, pnlTotal: 0,
   };
 }
@@ -76,16 +95,17 @@ export class MultiBot {
     if (cfg.emaFast >= cfg.emaSlow) throw new Error('La EMA rápida debe ser menor que la lenta');
     if (!(cfg.amount > 0)) throw new Error('Margen inválido');
     if (!(cfg.leverage >= 1 && cfg.leverage <= 20)) throw new Error('Apalancamiento entre 1x y 20x');
-    if (cfg.slPct * cfg.leverage >= 80) throw new Error(`Con ${cfg.leverage}x, un stop-loss de ${cfg.slPct}% está demasiado cerca de la liquidación`);
-    const twin = this.state.bots.find(b => b.symbol === cfg.symbol && b.id !== cfg.id);
-    if (twin && twin.leverage !== cfg.leverage) throw new Error(`Binance usa un solo apalancamiento por activo: el otro bot de ${cfg.symbol} usa ${twin.leverage}x`);
+    if (cfg.stopMode !== 'atr' && cfg.slPct * cfg.leverage >= 80) throw new Error(`Con ${cfg.leverage}x, un stop-loss de ${cfg.slPct}% está demasiado cerca de la liquidación`);
+    if (cfg.sizeMode === 'risk' && !(cfg.riskPct > 0 && cfg.riskPct <= 5)) throw new Error('El riesgo por operación debe estar entre 0.1 % y 5 %');
     const same = this.state.bots.find(b => b.symbol === cfg.symbol && b.direction === cfg.direction && b.id !== cfg.id);
     if (same) throw new Error(`Ya existe un bot ${cfg.direction} para ${cfg.symbol}`);
+    const twin = this.state.bots.find(b => b.symbol === cfg.symbol && b.id !== cfg.id);
+    if (twin && twin.leverage !== cfg.leverage) throw new Error(`Binance usa un solo apalancamiento por activo: el otro bot de ${cfg.symbol} usa ${twin.leverage}x`);
   }
 
   addBot(cfg) {
     if (this.state.bots.length >= MAX_BOTS) throw new Error(`Máximo ${MAX_BOTS} bots`);
-    const b = { ...BOT_DEFAULTS, ...cfg, id: uid(), position: null, lastActedCandle: null, tradesToday: 0, pnlToday: 0, pnlTotal: 0, day: today() };
+    const b = { ...BOT_DEFAULTS, ...cfg, id: uid(), position: null, lastActedCandle: null, lastExitT: 0, tradesToday: 0, pnlToday: 0, pnlTotal: 0, day: today() };
     if (!('rsiLimit' in cfg)) b.rsiLimit = b.direction === 'LONG' ? 70 : 30;
     this._validate(b);
     this.state.bots.push(b);
@@ -125,10 +145,15 @@ export class MultiBot {
     const active = this.state.bots.filter(b => b.enabled);
     if (!active.length) throw new Error('Agrega o activa al menos un bot');
     const c = this.getClient();
-    await c.syncTime();
-    await c.usdt();
-    await c.ensureHedge();
-    await this._prepare(true);
+    try {
+      await c.syncTime();
+      await c.usdt();
+      await c.ensureHedge();
+      await this._prepare(true);
+    } catch (e) {
+      this.log(`❌ No se pudieron iniciar los bots: ${e.message}`, 'error');
+      throw e;
+    }
     this.state.running = true;
     this.save();
     this.log(`▶️ ${active.length} bot(s) iniciados · ${c.testnet ? 'DEMO' : 'CUENTA REAL'}`, 'ok');
@@ -229,21 +254,18 @@ export class MultiBot {
     const c = this.getClient();
     if (!this.info[b.symbol]) this.info[b.symbol] = await c.symbolInfo(b.symbol);
     const key = `${b.symbol}|${b.interval}`;
-    const limit = Math.min(1000, Math.max(b.emaSlow * 4, b.rsiPeriod * 4, 150));
+    const limit = candlesNeeded(b);
     let all = cache.get(key);
     if (!all || all.length < limit) { all = await c.klines(b.symbol, b.interval, limit); cache.set(key, all); }
     const closed = all.filter(k => k.ct < c.now());
     if (closed.length < b.emaSlow + 2) throw new Error('No hay suficientes velas para calcular');
 
     const price = all[all.length - 1].c;
-    const ind = computeIndicators(closed, b);
+    const ind = indicators(closed, b);
     const i = closed.length - 1;
-    const cross = crossAt(ind, i);
-    const r = ind.rsi[i];
     const candleT = closed[i].t;
     const snap = this.snap[b.id] = {
-      price, fast: ind.fast[i], slow: ind.slow[i], rsi: r, at: Date.now(),
-      signal: cross === 'UP' ? 'LONG' : cross === 'DOWN' ? 'SHORT' : null,
+      price, fast: ind.fast[i], slow: ind.slow[i], rsi: ind.rsi[i], trend: ind.trend?.[i], atr: ind.atr[i], at: Date.now(),
     };
 
     // 1) Sincronizar con Binance
@@ -254,44 +276,63 @@ export class MultiBot {
         snap.upnl = ex.upnl; snap.mark = ex.mark;
         b.position.liq = ex.liq; b.position.qty = ex.qty;
         const p = b.position;
-        if (!p.slAlgoId && !p.tpAlgoId) {
+        if (!p.slAlgoId) {
           const hitSl = b.direction === 'LONG' ? ex.mark <= p.sl : ex.mark >= p.sl;
-          const hitTp = b.direction === 'LONG' ? ex.mark >= p.tp : ex.mark <= p.tp;
+          const hitTp = p.tp != null && !p.tpAlgoId && (b.direction === 'LONG' ? ex.mark >= p.tp : ex.mark <= p.tp);
           if (hitSl) { await this._close(b, 'Stop-loss'); return; }
           if (hitTp) { await this._close(b, 'Take-profit'); return; }
         }
       }
     }
 
-    // 2) Señales (una vez por vela)
-    if (!cross || b.lastActedCandle === candleT) return;
-    const opens = (b.direction === 'LONG' && cross === 'UP') || (b.direction === 'SHORT' && cross === 'DOWN');
-    if (b.position && !opens) {
-      await this._close(b, `Cruce ${cross === 'UP' ? 'alcista' : 'bajista'}`);
-    } else if (!b.position && opens && b.enabled && this.state.running) {
-      const rsiOk = r == null || (b.direction === 'LONG' ? r < b.rsiLimit : r > b.rsiLimit);
-      if (!rsiOk) this.log(`Señal, pero el RSI (${fmt(r, 1)}) no permite abrir`, 'warn', b);
-      else if (b.tradesToday >= b.maxTrades) this.log('Señal ignorada: límite de operaciones del día', 'warn', b);
-      else await this._open(b, price);
+    // Stop que sigue al precio (trailing): se mueve una vez por vela y se actualiza en Binance
+    if (b.position && b.trailAtr > 0 && b.position.trailCandle !== candleT) {
+      const p = b.position;
+      const ns = trailStop(b, p, ind, i);
+      p.trailCandle = candleT;
+      if (ns != null && Math.abs(ns - p.sl) > 0.25 * (ind.atr[i] || 0)) await this._moveStop(b, ns);
+      this.save();
+    }
+
+    // Motivo por el que no entra (se evalúa DESPUÉS de sincronizar, por si Binance acaba de cerrar la posición)
+    const sinceExit = b.lastExitT ? closed.filter(k => k.t > b.lastExitT).length : Infinity;
+    const block = b.position ? null : entryBlock(ind, i, b, sinceExit);
+    snap.block = block; snap.ready = !b.position && !block;
+
+    // 2) Decidir una vez por vela cerrada
+    if (b.lastActedCandle === candleT) return;
+    if (b.position) {
+      const bars = closed.filter(k => k.t > (b.position.entryCandleT || 0)).length;
+      const why = exitSignal(ind, i, b, bars);
+      if (why) await this._close(b, why.charAt(0).toUpperCase() + why.slice(1));
+    } else if (!block && b.enabled && this.state.running) {
+      if (b.tradesToday >= b.maxTrades) this.log('Señal ignorada: límite de operaciones del día', 'warn', b);
+      else if (this.openCount >= this.state.global.maxOpen) this.log(`Señal ignorada: ya hay ${this.openCount} posiciones abiertas (máximo ${this.state.global.maxOpen})`, 'warn', b);
+      else await this._open(b, price, ind.atr[i], candleT);
     }
     b.lastActedCandle = candleT;
     this.save();
   }
 
-  async _open(b, price) {
+  async _open(b, price, atrVal, candleT) {
     const c = this.getClient(), info = this.info[b.symbol];
     const bal = await c.usdt(info.quote);
-    if (bal.available < b.amount) {
-      this.log(`Señal, pero el saldo disponible (${fmt(bal.available, 2)} USDT) es menor al margen (${b.amount})`, 'warn', b);
-      return;
-    }
-    const qty = floorStep(Math.min(b.amount * b.leverage / price, info.maxMarketQty), info.marketStep);
-    if (+qty < info.minQty || +qty * price < info.minNotional) {
-      this.log(`Margen insuficiente para la posición mínima (${info.minNotional} USDT)`, 'warn', b);
-      return;
-    }
     const side = b.direction;
-    this.log(`Abriendo ${side} de ${qty} ${info.base} (${fmt(b.amount, 2)} USDT × ${b.leverage}x)…`, 'info', b);
+    const st0 = stopsFor(b, price, atrVal);
+    const size = sizeFor(b, bal.balance, price, st0.sl);
+    let qty = floorStep(Math.min(size.notional / price, info.maxMarketQty), info.marketStep);
+    if (+qty * price < info.minNotional || +qty < info.minQty) {
+      const minQ = Math.max(+ceilStep(info.minNotional * 1.03 / price, info.marketStep), info.minQty);
+      if (minQ * price > b.amount * b.leverage) { this.log(`El margen máximo (${b.amount} USDT × ${b.leverage}x) no alcanza la posición mínima de ${info.minNotional} USDT`, 'warn', b); return; }
+      qty = ceilStep(minQ, info.marketStep);
+    }
+    const margin = +qty * price / b.leverage;
+    if (bal.available < margin * 1.02) {
+      this.log(`Señal, pero el saldo disponible (${fmt(bal.available, 2)} USDT) no cubre el margen (${fmt(margin, 2)})`, 'warn', b);
+      return;
+    }
+    const riskTxt = `riesgo ≈ ${fmt(Math.abs(price - st0.sl) / price * qty * price, 2)} USDT`;
+    this.log(`Abriendo ${side} de ${qty} ${info.base} (≈${fmt(+qty * price, 0)} USDT, margen ${fmt(margin, 2)}, ${riskTxt})…`, 'info', b);
     const ord = await c.marketOpen(b.symbol, side === 'LONG' ? 'BUY' : 'SELL', qty, side);
     const openTime = c.now() - 5000;
 
@@ -299,16 +340,16 @@ export class MultiBot {
     for (let k = 0; k < 5 && !ex; k++) { if (k) await sleep(600); ex = await c.position(b.symbol, side); }
     if (!ex) throw new Error('La orden se envió pero no aparece la posición en Binance');
 
-    const { sl, tp } = slTpPrices(side, ex.entry, b);
+    const { sl, tp } = stopsFor(b, ex.entry, atrVal);
     b.position = {
       symbol: b.symbol, base: info.base, quote: info.quote, side,
-      entry: ex.entry, qty: ex.qty, margin: b.amount, leverage: b.leverage,
-      sl, tp, liq: ex.liq, time: Date.now(), openTime, openOrderId: ord && ord.orderId,
+      entry: ex.entry, qty: ex.qty, margin, leverage: b.leverage, risk: Math.abs(ex.entry - sl) * +ex.qty,
+      sl, tp, liq: ex.liq, time: Date.now(), openTime, openOrderId: ord && ord.orderId, entryCandleT: candleT, best: null,
       slAlgoId: null, tpAlgoId: null,
     };
     b.tradesToday++;
     this.save();
-    this.log(`✅ ${side} abierto: ${ex.qty} ${info.base} a ${fmt(ex.entry)} · SL ${fmt(sl)} · TP ${fmt(tp)}`, 'ok', b);
+    this.log(`✅ ${side} abierto: ${ex.qty} ${info.base} a ${fmt(ex.entry)} · SL ${fmt(sl)} · ${tp != null ? `TP ${fmt(tp)}` : 'sin TP fijo (sale por señal)'}`, 'ok', b);
     this.emit('trade');
     await this._protect(b);
   }
@@ -321,11 +362,29 @@ export class MultiBot {
     })).algoId;
     try { p.slAlgoId = await place('STOP_MARKET', p.sl); }
     catch (e) { this.log(`No se pudo colocar el stop-loss en Binance (${e.message})`, 'warn', b); }
-    try { p.tpAlgoId = await place('TAKE_PROFIT_MARKET', p.tp); }
-    catch (e) { this.log(`No se pudo colocar el take-profit en Binance (${e.message})`, 'warn', b); }
+    if (p.tp != null) {
+      try { p.tpAlgoId = await place('TAKE_PROFIT_MARKET', p.tp); }
+      catch (e) { this.log(`No se pudo colocar el take-profit en Binance (${e.message})`, 'warn', b); }
+    }
     this.save();
-    if (p.slAlgoId && p.tpAlgoId) this.log('🛡️ Stop-loss y take-profit colocados en Binance', 'ok', b);
-    else if (!p.slAlgoId && !p.tpAlgoId) this.log('La app vigilará SL/TP mientras esté abierta', 'warn', b);
+    if (p.slAlgoId && (p.tp == null || p.tpAlgoId)) this.log(`🛡️ ${p.tp != null ? 'Stop-loss y take-profit colocados' : 'Stop-loss colocado'} en Binance`, 'ok', b);
+    else if (!p.slAlgoId) this.log('La app vigilará el stop-loss mientras esté abierta', 'warn', b);
+  }
+
+  // Mueve el stop-loss en Binance (trailing): coloca el nuevo y luego cancela el anterior
+  async _moveStop(b, newSl) {
+    const c = this.getClient(), info = this.info[b.symbol], p = b.position;
+    const old = p.slAlgoId;
+    try {
+      const r = await c.algoClose({ symbol: p.symbol, side: p.side === 'LONG' ? 'SELL' : 'BUY', type: 'STOP_MARKET', triggerPrice: roundTick(newSl, info.tickSize), positionSide: p.side });
+      p.slAlgoId = r.algoId; p.sl = newSl;
+      if (old != null) { try { await c.cancelAlgo(old); } catch { /* ya no existe */ } }
+      this.log(`🔒 Stop movido a ${fmt(newSl)} (asegura ganancia)`, 'info', b);
+    } catch (e) {
+      if (e.code === -2021) { this.log('El precio ya tocó el nuevo stop: cerrando', 'warn', b); await this._close(b, 'Trailing'); }
+      else this.log(`No se pudo mover el stop (${e.message})`, 'warn', b);
+    }
+    this.save();
   }
 
   // Cancela SOLO las órdenes de protección de este bot (no las del otro bot del mismo activo)
@@ -346,7 +405,8 @@ export class MultiBot {
       const trades = (await c.userTrades(p.symbol, p.openTime - 60000)).filter(mine);
       const opens = trades.filter(t => p.openOrderId != null && t.orderId === p.openOrderId);
       const tOpen = opens.length ? Math.min(...opens.map(t => t.time)) : p.openTime;
-      const closing = trades.filter(t => t.side === closeSide && t.orderId !== p.openOrderId && t.time >= tOpen);
+      const openId = p.openOrderId ?? -1;
+      const closing = trades.filter(t => t.side === closeSide && t.orderId !== openId && (t.time > tOpen || (t.time === tOpen && t.orderId > openId)));
       if (!closing.length) continue;
       let pnl = 0, fees = 0;
       for (const t of [...opens, ...closing]) {
@@ -363,7 +423,7 @@ export class MultiBot {
     const status = async id => { try { return id ? (await c.getAlgo(id)).algoStatus : null; } catch { return null; } };
     const [s1, s2] = await Promise.all([status(p.slAlgoId), status(p.tpAlgoId)]);
     const fired = s => s === 'TRIGGERED' || s === 'FINISHED';
-    const reason = fired(s1) ? 'Stop-loss (Binance)' : fired(s2) ? 'Take-profit (Binance)' : 'Cerrada fuera del bot';
+    const reason = fired(s1) ? (p.best != null && p.trailCandle ? 'Stop / trailing (Binance)' : 'Stop-loss (Binance)') : fired(s2) ? 'Take-profit (Binance)' : 'Cerrada fuera del bot';
     await this._cancelProtection(b);
     this._record(b, await this._result(p), reason);
   }
@@ -391,9 +451,10 @@ export class MultiBot {
     st.trades.unshift({
       botId: b.id, label: botLabel(b), symbol: p.symbol, side: p.side, entry: p.entry, exit, qty: +p.qty,
       leverage: p.leverage, entryTime: p.time, exitTime: Date.now(), reason, pnl, pnlPct: pnl / p.margin * 100,
+      r: p.risk ? pnl / p.risk : null,
     });
     if (st.trades.length > 300) st.trades.length = 300;
-    b.pnlToday += pnl; b.pnlTotal += pnl;
+    b.pnlToday += pnl; b.pnlTotal += pnl; b.lastExitT = this.getClient().now();
     st.pnlToday += pnl; st.pnlTotal += pnl;
     b.position = null;
     this.save();
@@ -420,6 +481,17 @@ export class MultiBot {
     const b = this.bot(id); if (!b) return;
     b.position = null; this.save();
     this.log('Posición olvidada manualmente (no se envió ninguna orden)', 'warn', b);
+    this.emit('update');
+  }
+
+  applyPlan(plan) {
+    if (this.running) throw new Error('Detén los bots antes de aplicar el plan');
+    if (this.openCount) throw new Error('Cierra primero las posiciones abiertas de los bots');
+    this.state.bots = [];
+    for (const cfg of plan.bots) this.addBot(cfg);
+    Object.assign(this.state.global, plan.global);
+    this.save();
+    this.log(`🧠 Plan de Claude aplicado: ${plan.bots.length} bots, riesgo ${plan.bots[0].riskPct} % por operación, máx. ${plan.global.maxOpen} posiciones, pérdida máx. diaria ${plan.global.maxDailyLoss} USDT`, 'ok');
     this.emit('update');
   }
 

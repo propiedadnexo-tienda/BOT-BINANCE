@@ -2,7 +2,8 @@ import { Binance, floorStep, roundTick, freeBalance } from './binance.js';
 import { BinanceFutures } from './futures.js';
 import { computeIndicators, backtest, backtestFutures } from './indicators.js';
 import { Bot, fmt } from './bot.js';
-import { MultiBot, BOT_DEFAULTS, MAX_BOTS, minMargin, botLabel } from './multibot.js';
+import { MultiBot, BOT_DEFAULTS, MAX_BOTS, minMargin, botLabel, STRATEGY_NAMES, buildPlan } from './multibot.js';
+import { backtestBot, combine, indicators } from './strategy.js';
 import { drawChart } from './chart.js';
 import { NAMES, FEATURED, CATEGORY_LABEL, nameOf } from './names.js';
 
@@ -177,7 +178,8 @@ async function refreshMarket() {
 function drawMarket() {
   if (!mkCandles.length) return;
   const sym = mkSymbol();
-  const refBot = isFut() ? (mb.bots.find(b => b.symbol === sym) || BOT_DEFAULTS) : cfg;
+  const rb = isFut() ? (mb.bots.find(b => b.symbol === sym) || BOT_DEFAULTS) : cfg;
+  const refBot = isFut() && rb.strategy !== 'ema' ? { ...rb, emaFast: rb.bbN || 20, emaSlow: rb.trendEma || 50 } : rb;
   const ind = computeIndicators(mkCandles, refBot);
   const r = ind.rsi[ind.rsi.length - 1];
   $('#mkRsi').textContent = `RSI ${r == null ? '—' : r.toFixed(1)}`;
@@ -473,6 +475,7 @@ function renderMulti() {
   ].join('');
   if (document.activeElement !== $('#mbMaxLoss')) $('#mbMaxLoss').value = st.global.maxDailyLoss;
   if (document.activeElement !== $('#mbTick')) $('#mbTick').value = st.global.tickSec;
+  if (document.activeElement !== $('#mbMaxOpen')) $('#mbMaxOpen').value = st.global.maxOpen;
   const b = $('#mbStart');
   b.textContent = running ? '⏹ Detener todos' : '▶ Iniciar todos';
   b.classList.toggle('stop', running);
@@ -487,10 +490,12 @@ function renderMulti() {
         <div class="meta">SL <span class="down">${fmt(p.sl)}</span> · TP <span class="up">${fmt(p.tp)}</span>${p.liq ? ` · Liq. ${fmt(p.liq)}` : ''} · ${p.slAlgoId && p.tpAlgoId ? '🛡️ en Binance' : 'vigilada por la app'}</div>`;
     } else if (!bt.enabled) status = '<span class="muted">Pausado</span>';
     else if (!running) status = '<span class="muted">Listo — pulsa “Iniciar todos”</span>';
-    else status = `Esperando cruce${s ? ` · precio ${fmt(s.price)} · RSI ${s.rsi != null ? s.rsi.toFixed(1) : '—'} · EMA ${s.fast > s.slow ? '<span class="up">al alza</span>' : '<span class="down">a la baja</span>'}` : ''}`;
+    else if (!s) status = '<span class="muted">Revisando mercado…</span>';
+    else status = `${s.ready ? '<b class="up">Listo para entrar en la próxima vela</b>' : 'Esperando señal'} · precio ${fmt(s.price)} · RSI ${s.rsi != null ? s.rsi.toFixed(0) : '—'}
+        ${s.block ? `<div class="why">Motivo: ${esc(s.block)}</div>` : ''}`;
     return `<div class="card botcard ${bt.enabled ? '' : 'paused'}" data-id="${bt.id}">
       <div class="top"><div><span class="side ${bt.direction}">${bt.direction}</span><b>${esc(nameOf(bt.symbol.replace(/USDT$/, '')))}</b>${tagHtml(categoryOf(bt.symbol))}
-        <div class="meta">${esc(bt.interval)} · ${bt.amount} USDT × ${bt.leverage}x · SL ${bt.slPct}% · TP ${bt.tpPct}%</div></div>
+        <div class="meta">${esc(STRATEGY_NAMES[bt.strategy || 'ema'])} · ${esc(bt.interval)} · ${bt.sizeMode === 'risk' ? `riesgo ${bt.riskPct}%` : `${bt.amount} USDT`} · ${bt.leverage}x · SL ${bt.stopMode === 'atr' ? `${bt.slAtr}×ATR` : `${bt.slPct}%`}</div></div>
         <label class="switch" title="Activar/pausar"><input type="checkbox" data-act="toggle" ${bt.enabled ? 'checked' : ''}><span></span></label></div>
       <div class="st">${status}</div>
       <div class="meta">Hoy: ${bt.tradesToday}/${bt.maxTrades} ops · <span class="${pnlCls(bt.pnlToday)}">${signed(bt.pnlToday)}</span> · Total <span class="${pnlCls(bt.pnlTotal)}">${signed(bt.pnlTotal)}</span> USDT</div>
@@ -533,8 +538,46 @@ $('#mbStart').addEventListener('click', e => guard(e.currentTarget, async () => 
 }));
 $('#mbMaxLoss').addEventListener('change', e => mb.setGlobal({ maxDailyLoss: Math.max(0, +e.target.value || 0) }));
 $('#mbTick').addEventListener('change', e => mb.setGlobal({ tickSec: Math.max(10, +e.target.value || 20) }));
+$('#mbMaxOpen').addEventListener('change', e => mb.setGlobal({ maxOpen: Math.min(10, Math.max(1, Math.round(+e.target.value || 5))) }));
 $('#mbReset').addEventListener('click', () => { if (confirm('¿Borrar el historial y el registro de todos los bots?')) mb.resetStats(); });
 $('#mbAdd').addEventListener('click', () => openEditor(null));
+$('#mbPlan').addEventListener('click', e => guard(e.currentTarget, async () => {
+  let bal = 5000;
+  try { bal = (await getClient().usdt()).balance || bal; } catch { /* sin claves: usa referencia */ }
+  const plan = buildPlan(bal);
+  const msg = `Se reemplazarán tus bots actuales por el Plan de Claude:\n\n• 10 bots: BTC, ETH, SOL, BNB, XRP (Long + Short)\n• Rebote a la media, velas de 4 h, filtro EMA 200\n• Riesgo 1 % del saldo por operación (≈ ${fmt(bal * 0.01, 0)} USDT)\n• Máx. 6 posiciones a la vez\n• Se detiene si pierde ${plan.global.maxDailyLoss} USDT en un día\n\n¿Aplicar?`;
+  if (!confirm(msg)) return;
+  mb.applyPlan(plan);
+  toast('Plan aplicado. Pulsa “Iniciar todos”.', 'ok');
+}));
+$('#mbTestPlan').addEventListener('click', e => guard(e.currentTarget, async () => {
+  const bots = mb.bots.length ? mb.bots : buildPlan(5000).bots;
+  $('#mbPlanOut').innerHTML = `<p class="hint">Descargando historial de ${new Set(bots.map(b => b.symbol)).size} activos…</p>`;
+  let bal = 5000;
+  try { bal = (await getClient().usdt()).balance || bal; } catch {}
+  const cache = new Map(), res = [];
+  for (const b of bots) {
+    const k = `${b.symbol}|${b.interval}`;
+    if (!cache.has(k)) cache.set(k, await getClient().klines(b.symbol, b.interval, 1000));
+    res.push({ b, r: backtestBot(cache.get(k), b, { balance: bal, feePct: 0.06 }) });
+  }
+  const all = combine(res.map(x => x.r));
+  const days = Math.round((all.to - all.from) / 86400000);
+  const st = (a, v, k = '') => `<div class="stat"><span>${a}</span><b class="${k}">${v}</b></div>`;
+  $('#mbPlanOut').innerHTML = `<p class="hint" style="margin-top:12px">Historial real: ${dmy(all.from)} → ${dmy(all.to)} (${days} días), saldo ${fmt(bal, 0)} USDT, comisiones incluidas.</p>
+    <div class="stats">
+      ${st('Resultado', `${signed(all.totalPnl, 0)} USDT (${signed(all.totalPnl / bal * 100, 1)}%)`, pnlCls(all.totalPnl))}
+      ${st('Operaciones', `${all.count} (${fmt(all.count / Math.max(1, days) * 7, 1)}/semana)`)}
+      ${st('Aciertos', `${fmt(all.winRate, 0)}%`)}
+      ${st('Factor de ganancia', all.profitFactor === Infinity ? '∞' : fmt(all.profitFactor, 2), all.profitFactor >= 1 ? 'up' : 'down')}
+      ${st('Peor caída', `-${fmt(all.maxDD, 0)} USDT (${fmt(all.maxDD / bal * 100, 1)}%)`, 'down')}
+      ${st('Ganancia / pérdida media', `+${fmt(all.avgWin, 0)} / -${fmt(all.avgLoss, 0)}`)}
+    </div>
+    <table class="mini"><tr><th>Bot</th><th>Ops</th><th>Aciertos</th><th>Resultado</th></tr>
+      ${res.map(({ b, r }) => `<tr><td>${esc(botLabel(b))}</td><td>${r.count}</td><td>${fmt(r.winRate, 0)}%</td><td class="${pnlCls(r.totalPnl)}">${signed(r.totalPnl, 0)}</td></tr>`).join('')}
+    </table>
+    <p class="hint">Factor de ganancia &gt; 1 = gana más de lo que pierde. El pasado no garantiza el futuro: por eso primero va en Demo.</p>`;
+}));
 $('#mbPair').addEventListener('click', () => openPicker(sym => guard(null, async () => {
   const twin = mb.bots.find(b => b.symbol === sym);
   const lev = twin ? twin.leverage : BOT_DEFAULTS.leverage;
@@ -542,7 +585,7 @@ $('#mbPair').addEventListener('click', () => openPicker(sym => guard(null, async
   for (const dir of ['LONG', 'SHORT']) {
     if (mb.bots.some(b => b.symbol === sym && b.direction === dir)) continue;
     if (mb.bots.length >= MAX_BOTS) { toast(`Máximo ${MAX_BOTS} bots`, 'error'); break; }
-    mb.addBot({ symbol: sym, direction: dir, leverage: lev, rsiLimit: dir === 'LONG' ? 70 : 30 });
+    mb.addBot({ symbol: sym, direction: dir, leverage: lev });
     made++;
   }
   toast(made ? `Creados ${made} bot(s) para ${sym}. Puedes editarlos antes de iniciar.` : `${sym} ya tiene sus bots Long y Short`, made ? 'ok' : '');
@@ -550,40 +593,49 @@ $('#mbPair').addEventListener('click', () => openPicker(sym => guard(null, async
 
 // Editor de bot
 let editing = null, edSymbol = 'BTCUSDT';
-const ED_NUM = ['amount', 'leverage', 'maxTrades', 'slPct', 'tpPct', 'emaFast', 'emaSlow', 'rsiPeriod', 'rsiLimit'];
+const ED_NUM = ['riskPct', 'amount', 'leverage', 'slAtr', 'tpAtr', 'trendEma', 'maxTrades', 'bbN', 'bbK', 'rsiLimit', 'maxBars', 'entryN', 'exitN', 'trailAtr', 'emaFast', 'emaSlow'];
+function edShowFields() {
+  const st = $('#edStrat').value;
+  $$('#edForm [data-s]').forEach(el => { el.hidden = el.dataset.s !== st; });
+}
 function openEditor(bt) {
   editing = bt;
-  const base = bt || { ...BOT_DEFAULTS, symbol: mkSymbol() || 'BTCUSDT' };
+  const base = { ...BOT_DEFAULTS, ...(bt || { symbol: mkSymbol() || 'BTCUSDT' }) };
   edSymbol = base.symbol;
   $('#edTitle').textContent = bt ? `Editar ${botLabel(bt)}` : 'Nuevo bot';
   $('#edSymbol').textContent = `${nameOf(edSymbol.replace(/USDT$/, ''))} · ${edSymbol}  ▾`;
   setSeg('edDir', base.direction);
+  $('#edStrat').value = base.strategy || 'ema';
   const f = $('#edForm');
   f.elements.interval.value = base.interval;
-  for (const k of ED_NUM) f.elements[k].value = base[k];
+  f.elements.entryMode.value = base.entryMode || 'cross';
+  for (const k of ED_NUM) f.elements[k].value = base[k] ?? '';
   const locked = !!bt?.position;
   $('#edSymbol').disabled = locked;
   $$('#edDir button').forEach(x => { x.disabled = locked; });
   $('#edBt').innerHTML = '';
-  edUpdate();
+  edShowFields(); edUpdate();
   $('#editor').hidden = false;
 }
 function edRead() {
   const f = $('#edForm');
-  const out = { symbol: edSymbol, direction: segValue('edDir'), interval: f.elements.interval.value };
+  const out = { symbol: edSymbol, direction: segValue('edDir'), strategy: $('#edStrat').value, interval: f.elements.interval.value,
+    entryMode: f.elements.entryMode.value, stopMode: 'atr', sizeMode: 'risk' };
   for (const k of ED_NUM) out[k] = +f.elements[k].value;
+  if (out.strategy === 'ema') out.rsiLimit = out.direction === 'LONG' ? 70 : 30;
   return out;
 }
 function edUpdate() {
   const c = edRead(), long = c.direction === 'LONG';
-  $('#edRsiLbl').textContent = long ? 'RSI máx. para abrir' : 'RSI mín. para abrir';
-  $('#edInfo').textContent = `${long ? 'Abre LONG cuando la EMA rápida cruza hacia arriba y cierra en el cruce hacia abajo.' : 'Abre SHORT cuando la EMA rápida cruza hacia abajo y cierra en el cruce hacia arriba.'} Posición ≈ ${fmt(c.amount * c.leverage, 2)} USDT · stop-loss ≈ −${fmt(c.amount * c.slPct * c.leverage / 100, 2)} USDT · take-profit ≈ +${fmt(c.amount * c.tpPct * c.leverage / 100, 2)} USDT.`;
+  const how = {
+    meanrev: long ? 'Compra caídas exageradas (bajo la banda inferior) cuando la tendencia de fondo es alcista y vende al volver a la media.' : 'Vende en corto subidas exageradas (sobre la banda superior) cuando la tendencia de fondo es bajista y cierra al volver a la media.',
+    breakout: long ? 'Compra cuando el precio rompe el máximo de las últimas velas y deja correr la ganancia con un stop que lo sigue.' : 'Vende en corto cuando rompe el mínimo de las últimas velas y deja correr la ganancia con un stop que lo sigue.',
+    ema: long ? 'Abre Long con la EMA rápida sobre la lenta y cierra en el cruce contrario.' : 'Abre Short con la EMA rápida bajo la lenta y cierra en el cruce contrario.',
+  }[c.strategy];
+  $('#edInfo').textContent = `${how} Si toca el stop pierde ≈ ${c.riskPct}% del saldo; el tamaño se calcula solo (máx. ${fmt(c.amount * c.leverage, 0)} USDT de posición).`;
 }
-bindSeg('edDir', v => {
-  const f = $('#edForm');
-  if (+f.elements.rsiLimit.value === (v === 'LONG' ? 30 : 70)) f.elements.rsiLimit.value = v === 'LONG' ? 70 : 30;
-  edUpdate();
-});
+bindSeg('edDir', edUpdate);
+$('#edStrat').addEventListener('change', () => { edShowFields(); edUpdate(); });
 $('#edForm').addEventListener('input', edUpdate);
 $('#edSymbol').addEventListener('click', () => openPicker(sym => { edSymbol = sym; $('#edSymbol').textContent = `${nameOf(sym.replace(/USDT$/, ''))} · ${sym}  ▾`; edUpdate(); }));
 $('#edClose').addEventListener('click', () => { $('#editor').hidden = true; });
@@ -593,18 +645,22 @@ $('#edSave').addEventListener('click', e => guard(e.currentTarget, async () => {
   const c = getClient();
   const info = await c.symbolInfo(c2.symbol);
   const need = minMargin(info, await c.price(c2.symbol), c2.leverage);
-  if (c2.amount < need) throw new Error(`Con ${c2.leverage}x, ${c2.symbol} necesita al menos ${need} USDT de margen`);
+  if (c2.amount < need) throw new Error(`Con ${c2.leverage}x, ${c2.symbol} necesita al menos ${need} USDT de margen máximo`);
   if (editing) mb.updateBot(editing.id, c2); else mb.addBot(c2);
   $('#editor').hidden = true;
   toast(editing ? 'Bot actualizado' : `Bot ${c2.direction} de ${c2.symbol} creado`, 'ok');
 }));
 $('#edTest').addEventListener('click', e => guard(e.currentTarget, async () => {
   const c2 = { ...BOT_DEFAULTS, ...edRead() };
-  c2.rsiMax = c2.direction === 'LONG' ? c2.rsiLimit : 101;
-  c2.rsiMin = c2.direction === 'SHORT' ? c2.rsiLimit : -1;
   $('#edBt').innerHTML = '<p class="hint">Descargando historial…</p>';
+  let bal = 5000;
+  try { bal = (await getClient().usdt()).balance || bal; } catch {}
   const candles = await getClient().klines(c2.symbol, c2.interval, 1000);
-  $('#edBt').innerHTML = btHtml(backtestFutures(candles, c2), c2, true);
+  const r = backtestBot(candles, c2, { balance: bal, feePct: 0.06 });
+  const st = (a, v, k = '') => `<div class="stat"><span>${a}</span><b class="${k}">${v}</b></div>`;
+  $('#edBt').innerHTML = `<p class="hint">${dmy(r.from)} → ${dmy(r.to)} · saldo ${fmt(bal, 0)} USDT · comisiones incluidas</p><div class="stats">
+    ${st('Resultado', `${signed(r.totalPnl, 0)} USDT`, pnlCls(r.totalPnl))}${st('Operaciones', r.count)}
+    ${st('Aciertos', `${fmt(r.winRate, 0)}%`)}${st('Factor de ganancia', r.profitFactor === Infinity ? '∞' : fmt(r.profitFactor, 2), r.profitFactor >= 1 ? 'up' : 'down')}</div>`;
 }));
 
 // ---------------- Render general del bot ----------------

@@ -18,6 +18,24 @@ App para el celular que muestra el mercado, permite operar a mano y ejecuta un *
 - Límites de seguridad: máximo de operaciones por día y pérdida diaria máxima (detiene el bot).
 - Todos los parámetros son editables. Valores por defecto: BTCUSDT, velas 15m, EMA 9/21, RSI 14 < 70, 20 USDT por operación, SL 1.5 %, TP 3 %.
 
+## 🧠 Plan de Claude (estrategia validada con datos reales)
+
+Se probaron 24 combinaciones de estrategias con **datos reales de Binance Futuros** (ene 2025 – sep 2026, 8 activos,
+comisiones y deslizamiento incluidos), eligiendo con los primeros 15 meses y **confirmando** con los últimos 6.
+Resultados completos en [`research/results.md`](research/results.md) (se regeneran con la acción *Investigar estrategias*).
+
+| Estrategia | Velas | Factor de ganancia (entrenamiento → validación) |
+|---|---|---|
+| Cruce de medias (la original) | 15m / 1h / 4h | pierde en validación en todas las variantes |
+| Ruptura + trailing | 1h / 4h | 1.10–1.43 → ≈1.0 (sin ventaja clara) |
+| **Rebote a la media + filtro EMA 200** | **4h** | **1.49 → 1.33** ✅ |
+
+El plan crea 10 bots (BTC, ETH, SOL, BNB, XRP × Long/Short) con esa estrategia:
+- Entra cuando el precio cierra fuera de la banda de Bollinger (20, 2σ) **a favor** de la tendencia de fondo (EMA 200).
+- Sale al volver a la media, por tiempo (30 velas) o por stop-loss de 2×ATR colocado en Binance.
+- Tamaño por riesgo: **1 % del saldo** si toca el stop. Máx. 6 posiciones a la vez. Se detiene si pierde 3 % en un día.
+- Opera poco (varias veces por semana entre los 10 bots): es normal pasar horas sin operaciones.
+
 ## Modo Futuros: varios bots Long y Short
 En **Ajustes → Mercado → Futuros** puedes tener **hasta 10 bots a la vez** sobre contratos perpetuos USDⓈ-M,
 de **criptomonedas y acciones** (Tesla, NVIDIA, Apple, Meta, Google, Microsoft, Amazon… según disponibilidad en tu cuenta).
