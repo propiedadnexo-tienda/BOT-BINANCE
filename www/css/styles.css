@@ -153,3 +153,16 @@ body.futures .spot-only { display: none !important; }
 .switch input:checked + span::before { transform: translateX(18px); }
 #mbStart.stop { background: var(--panel2); color: var(--down); border: 1px solid var(--down); }
 #picker { z-index: 30; }
+
+.chips { display: flex; gap: 6px; overflow-x: auto; margin-top: 10px; padding-bottom: 2px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chips button { flex: none; padding: 7px 12px; border-radius: 99px; background: var(--panel2); color: var(--muted); font-size: 13px; }
+.chips button.on { background: var(--accent); color: #111; font-weight: 700; }
+.pk-sec { font-size: 12px; font-weight: 700; color: var(--muted); margin: 14px 2px 6px; text-transform: uppercase; letter-spacing: .04em; }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tile { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 10px; cursor: pointer; text-align: left; }
+.tile:active { border-color: var(--accent); }
+.tile b { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .sub { color: var(--muted); font-size: 11px; }
+.tile .px { display: flex; justify-content: space-between; margin-top: 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pk-item .nm { font-size: 15px; font-weight: 700; }

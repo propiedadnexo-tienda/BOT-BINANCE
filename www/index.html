@@ -218,12 +218,14 @@
   <div id="picker" class="sheet" hidden>
     <div class="sheet-box">
       <div class="row between"><h3>Elegir activo</h3><button id="pkClose" class="ghost small">✕</button></div>
-      <input id="pkSearch" placeholder="Buscar: BTC, ETH, TSLA, NVDA…" autocapitalize="characters" autocomplete="off">
-      <div class="seg" id="pkTabs">
-        <button data-v="all" class="on">Todos</button>
-        <button data-v="crypto">Cripto</button>
-        <button data-v="stock">Acciones</button>
+      <div class="chips" id="pkTabs">
+        <button data-v="featured" class="on">⭐ Destacados</button>
+        <button data-v="stock" class="fut-only">🏢 Acciones</button>
+        <button data-v="crypto">🪙 Cripto</button>
+        <button data-v="commodity" class="fut-only">🥇 Materias primas</button>
+        <button data-v="all">Todos</button>
       </div>
+      <input id="pkSearch" placeholder="Buscar (opcional): Tesla, Bitcoin, oro…" autocomplete="off">
       <div id="pkList" class="pk-list"><p class="hint">Cargando…</p></div>
     </div>
   </div>

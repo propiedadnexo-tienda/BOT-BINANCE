@@ -4,6 +4,7 @@ import { computeIndicators, backtest, backtestFutures } from './indicators.js';
 import { Bot, fmt } from './bot.js';
 import { MultiBot, BOT_DEFAULTS, MAX_BOTS, minMargin, botLabel } from './multibot.js';
 import { drawChart } from './chart.js';
+import { NAMES, FEATURED, CATEGORY_LABEL, nameOf } from './names.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -92,19 +93,40 @@ function openPicker(cb) {
   pickerCb = cb;
   $('#picker').hidden = false;
   $('#pkSearch').value = '';
-  $('#pkTabs button[data-v=stock]').hidden = !isFut();
-  setSeg('pkTabs', 'all');
+  setSeg('pkTabs', 'featured');
   renderPicker();
   loadMarkets().then(renderPicker).catch(e => { $('#pkList').innerHTML = `<p class="hint">${esc(e.message)}</p>`; });
 }
+const tagHtml = cat => cat && cat !== 'crypto' ? `<span class="tag">${CATEGORY_LABEL[cat]}</span>` : '';
+function tileHtml(m) {
+  return `<button class="tile" data-sym="${esc(m.symbol)}"><b>${esc(nameOf(m.base))}</b><span class="sub">${esc(m.base)}</span>
+    <div class="px"><span>${fmt(m.price)}</span><span class="${pnlCls(m.change)}">${signed(m.change)}%</span></div></button>`;
+}
+function rowHtml(m) {
+  return `<div class="pk-item" data-sym="${esc(m.symbol)}">
+    <div><span class="nm">${esc(nameOf(m.base))}</span>${tagHtml(m.category)}<div class="sub">${esc(m.base)}/USDT</div></div>
+    <div style="text-align:right"><b>${fmt(m.price)}</b><div class="sub ${pnlCls(m.change)}">${signed(m.change)}%</div></div></div>`;
+}
 function renderPicker() {
   if (!marketsCache) { $('#pkList').innerHTML = '<p class="hint">Cargando activos…</p>'; return; }
-  const q = $('#pkSearch').value.trim().toUpperCase(), cat = segValue('pkTabs');
-  const list = marketsCache.filter(m => (cat === 'all' || m.category === cat) && (!q || m.symbol.includes(q))).slice(0, 150);
-  $('#pkList').innerHTML = list.length ? list.map(m => `<div class="pk-item" data-sym="${esc(m.symbol)}">
-      <div><b>${esc(m.base)}</b><span class="muted">/USDT</span>${m.category === 'stock' ? '<span class="tag">ACCIÓN</span>' : ''}</div>
-      <div style="text-align:right"><b>${fmt(m.price)}</b><div class="sub ${pnlCls(m.change)}">${signed(m.change)}%</div></div></div>`).join('')
-    : `<p class="hint">Sin resultados${cat === 'stock' ? '. Si no aparecen acciones, puede que tu entorno (Demo o región) aún no las tenga.' : ''}</p>`;
+  const q = $('#pkSearch').value.trim().toUpperCase(), tab = segValue('pkTabs');
+  const bySym = new Map(marketsCache.map(m => [m.base, m]));
+  if (tab === 'featured' && !q) {
+    const sec = (title, cat) => {
+      const items = FEATURED[cat].map(b => bySym.get(b)).filter(Boolean);
+      return items.length ? `<div class="pk-sec">${title}</div><div class="tiles">${items.map(tileHtml).join('')}</div>` : '';
+    };
+    const html = isFut()
+      ? sec('🏢 Acciones más grandes y conocidas', 'stock') + sec('🪙 Criptomonedas principales', 'crypto') + sec('🥇 Materias primas', 'commodity')
+      : sec('🪙 Criptomonedas principales', 'crypto');
+    const noStocks = isFut() && !FEATURED.stock.some(b => bySym.has(b));
+    $('#pkList').innerHTML = (noStocks ? '<p class="hint">Tu entorno actual todavía no tiene acciones disponibles; aparecerán aquí cuando Binance las active en tu cuenta.</p>' : '') + (html || '<p class="hint">Sin activos destacados.</p>');
+    return;
+  }
+  const list = marketsCache.filter(m => (q || tab === 'all' || tab === 'featured' || m.category === tab)
+    && (!q || m.symbol.includes(q) || nameOf(m.base).toUpperCase().includes(q))).slice(0, 150);
+  $('#pkList').innerHTML = list.length ? list.map(rowHtml).join('')
+    : `<p class="hint">Sin resultados${tab !== 'crypto' && tab !== 'all' ? '. Puede que tu entorno (Demo o región) aún no tenga estos activos.' : ''}</p>`;
 }
 $('#pkSearch').addEventListener('input', renderPicker);
 bindSeg('pkTabs', renderPicker);
@@ -458,7 +480,6 @@ function renderMulti() {
 
   $('#mbList').innerHTML = mb.bots.length ? mb.bots.map(bt => {
     const s = mb.snap[bt.id], p = bt.position;
-    const stock = categoryOf(bt.symbol) === 'stock';
     let status;
     if (p) {
       const u = s?.upnl;
@@ -468,7 +489,7 @@ function renderMulti() {
     else if (!running) status = '<span class="muted">Listo — pulsa “Iniciar todos”</span>';
     else status = `Esperando cruce${s ? ` · precio ${fmt(s.price)} · RSI ${s.rsi != null ? s.rsi.toFixed(1) : '—'} · EMA ${s.fast > s.slow ? '<span class="up">al alza</span>' : '<span class="down">a la baja</span>'}` : ''}`;
     return `<div class="card botcard ${bt.enabled ? '' : 'paused'}" data-id="${bt.id}">
-      <div class="top"><div><span class="side ${bt.direction}">${bt.direction}</span><b>${esc(bt.symbol.replace(/USDT$/, ''))}</b>${stock ? '<span class="tag">ACCIÓN</span>' : ''}
+      <div class="top"><div><span class="side ${bt.direction}">${bt.direction}</span><b>${esc(nameOf(bt.symbol.replace(/USDT$/, '')))}</b>${tagHtml(categoryOf(bt.symbol))}
         <div class="meta">${esc(bt.interval)} · ${bt.amount} USDT × ${bt.leverage}x · SL ${bt.slPct}% · TP ${bt.tpPct}%</div></div>
         <label class="switch" title="Activar/pausar"><input type="checkbox" data-act="toggle" ${bt.enabled ? 'checked' : ''}><span></span></label></div>
       <div class="st">${status}</div>
@@ -481,7 +502,7 @@ function renderMulti() {
   }).join('') : '<div class="card hint">Aún no tienes bots. Toca <b>⚡ Crear Long + Short</b> para crear dos bots de un activo (uno gana en subidas y otro en bajadas), o <b>＋ Agregar bot</b> para crear uno a medida.</div>';
 
   $('#mbTrades').innerHTML = st.trades.length
-    ? st.trades.slice(0, 80).map(t => `<div class="item"><div><span class="side ${t.side}">${t.side}</span><b>${esc(t.symbol.replace(/USDT$/, ''))}</b> <span class="muted">${esc(t.reason)}</span><div class="sub">${dmy(t.entryTime)} → ${dmy(t.exitTime)} · ${fmt(t.entry)} → ${fmt(t.exit)} · ${t.leverage}x</div></div><b class="${pnlCls(t.pnl)}">${signed(t.pnl)}<div class="sub" style="text-align:right">${fmt(t.pnlPct, 1)}%</div></b></div>`).join('')
+    ? st.trades.slice(0, 80).map(t => `<div class="item"><div><span class="side ${t.side}">${t.side}</span><b>${esc(nameOf(t.symbol.replace(/USDT$/, '')))}</b> <span class="muted">${esc(t.reason)}</span><div class="sub">${dmy(t.entryTime)} → ${dmy(t.exitTime)} · ${fmt(t.entry)} → ${fmt(t.exit)} · ${t.leverage}x</div></div><b class="${pnlCls(t.pnl)}">${signed(t.pnl)}<div class="sub" style="text-align:right">${fmt(t.pnlPct, 1)}%</div></b></div>`).join('')
     : 'Aún no hay operaciones';
 }
 $('#mbList').addEventListener('click', e => {
@@ -535,7 +556,7 @@ function openEditor(bt) {
   const base = bt || { ...BOT_DEFAULTS, symbol: mkSymbol() || 'BTCUSDT' };
   edSymbol = base.symbol;
   $('#edTitle').textContent = bt ? `Editar ${botLabel(bt)}` : 'Nuevo bot';
-  $('#edSymbol').textContent = `${edSymbol}  ▾`;
+  $('#edSymbol').textContent = `${nameOf(edSymbol.replace(/USDT$/, ''))} · ${edSymbol}  ▾`;
   setSeg('edDir', base.direction);
   const f = $('#edForm');
   f.elements.interval.value = base.interval;
@@ -564,7 +585,7 @@ bindSeg('edDir', v => {
   edUpdate();
 });
 $('#edForm').addEventListener('input', edUpdate);
-$('#edSymbol').addEventListener('click', () => openPicker(sym => { edSymbol = sym; $('#edSymbol').textContent = `${sym}  ▾`; edUpdate(); }));
+$('#edSymbol').addEventListener('click', () => openPicker(sym => { edSymbol = sym; $('#edSymbol').textContent = `${nameOf(sym.replace(/USDT$/, ''))} · ${sym}  ▾`; edUpdate(); }));
 $('#edClose').addEventListener('click', () => { $('#editor').hidden = true; });
 $('#editor').addEventListener('click', e => { if (e.target.id === 'editor') $('#editor').hidden = true; });
 $('#edSave').addEventListener('click', e => guard(e.currentTarget, async () => {

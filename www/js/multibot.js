@@ -8,6 +8,7 @@
 import { computeIndicators, crossAt, slTpPrices } from './indicators.js';
 import { floorStep, ceilStep, roundTick } from './binance.js';
 import { fmt } from './bot.js';
+import { nameOf } from './names.js';
 
 const STATE_KEY = 'mbot_state_v1';
 export const MAX_BOTS = 10;
@@ -26,7 +27,7 @@ export function minMargin(info, price, leverage) {
   return Math.ceil(q * price * 1.03 / leverage);
 }
 
-export const botLabel = b => `${b.direction === 'LONG' ? '📈' : '📉'} ${b.symbol.replace(/USDT$/, '')} ${b.direction}`;
+export const botLabel = b => `${b.direction === 'LONG' ? '📈' : '📉'} ${nameOf(b.symbol.replace(/USDT$/, ''))} ${b.direction}`;
 
 function defaultState() {
   return {

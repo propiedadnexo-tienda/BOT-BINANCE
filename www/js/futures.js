@@ -3,18 +3,23 @@
 // Stop-loss / take-profit usan el servicio de Algo Orders (/fapi/v1/algoOrder), obligatorio desde fines de 2025.
 
 import { Binance } from './binance.js';
+import { COMMODITIES } from './names.js';
 
 export const FUTURES_URLS = {
   real: 'https://fapi.binance.com',
   testnet: 'https://demo-fapi.binance.com',
 };
 
-// Acciones tokenizadas como perpetuos (TradFi). Se detectan por tipo de subyacente o por ticker conocido.
-const STOCK_TICKERS = new Set(['TSLA', 'NVDA', 'AAPL', 'META', 'GOOGL', 'GOOG', 'MSFT', 'AMZN', 'NFLX', 'AMD', 'COIN', 'MSTR', 'HOOD', 'PLTR', 'INTC', 'ORCL', 'BABA', 'TSM', 'CRCL', 'SPY', 'QQQ']);
-export function isStock(s) {
+// Binance lista acciones, ETFs y materias primas como contratos TRADIFI_PERPETUAL (liquidados en USDT).
+const STOCK_TICKERS = new Set(['TSLA', 'NVDA', 'AAPL', 'META', 'GOOGL', 'GOOG', 'MSFT', 'AMZN', 'NFLX', 'AMD', 'COIN', 'MSTR', 'HOOD', 'PLTR', 'INTC', 'ORCL', 'BABA', 'TSM', 'CRCL', 'PAYP', 'AVGO', 'SPY', 'QQQ', 'EWJ', 'EWY']);
+export const PERP_TYPES = new Set(['PERPETUAL', 'TRADIFI_PERPETUAL']);
+export function categoryOf(s) {
+  if (COMMODITIES.has(s.baseAsset)) return 'commodity';
+  const tradfi = s.contractType === 'TRADIFI_PERPETUAL';
   const type = String(s.underlyingType || '').toUpperCase();
   const sub = (s.underlyingSubType || []).join(' ');
-  return (type && !['COIN', 'INDEX', 'PREMARKET'].includes(type)) || /stock|equit|tradfi/i.test(sub) || STOCK_TICKERS.has(s.baseAsset);
+  if (tradfi || STOCK_TICKERS.has(s.baseAsset) || /stock|equit|tradfi/i.test(sub) || (type && !['COIN', 'INDEX', 'PREMARKET'].includes(type))) return 'stock';
+  return 'crypto';
 }
 
 export class BinanceFutures extends Binance {
@@ -62,11 +67,11 @@ export class BinanceFutures extends Binance {
     const t24 = await this._req('GET', '/fapi/v1/ticker/24hr');
     const tick = new Map(t24.map(t => [t.symbol, t]));
     return (this._allInfo.symbols || [])
-      .filter(s => s.status === 'TRADING' && s.contractType === 'PERPETUAL' && (s.marginAsset || s.quoteAsset) === 'USDT')
+      .filter(s => s.status === 'TRADING' && PERP_TYPES.has(s.contractType) && (s.marginAsset || s.quoteAsset) === 'USDT')
       .map(s => {
         const t = tick.get(s.symbol) || {};
         return {
-          symbol: s.symbol, base: s.baseAsset, category: isStock(s) ? 'stock' : 'crypto',
+          symbol: s.symbol, base: s.baseAsset, category: categoryOf(s),
           price: +t.lastPrice || 0, change: +t.priceChangePercent || 0, volume: +t.quoteVolume || 0,
         };
       })
