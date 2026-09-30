@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1216">
+  <title>Bot Binance</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">⚡ Bot Binance</div>
+    <div class="badges">
+      <span id="envBadge" class="badge testnet">TESTNET</span>
+      <span id="botBadge" class="badge off">Bot apagado</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ======== MERCADO ======== -->
+    <section id="tab-market" class="tab active">
+      <div class="row">
+        <input id="mkSymbol" class="grow" value="BTCUSDT" autocapitalize="characters" aria-label="Par">
+        <select id="mkInterval" aria-label="Temporalidad">
+          <option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option>
+        </select>
+      </div>
+      <div class="price-head">
+        <div id="mkPrice" class="big">—</div>
+        <div id="mkChange" class="chg">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="mkChart"></canvas></div>
+      <div class="legend">
+        <span><i class="dot fast"></i>EMA rápida</span>
+        <span><i class="dot slow"></i>EMA lenta</span>
+        <span id="mkRsi">RSI —</span>
+      </div>
+      <div class="stats" id="mkStats"></div>
+    </section>
+
+    <!-- ======== OPERAR ======== -->
+    <section id="tab-trade" class="tab">
+      <div class="card">
+        <h3>Orden manual <small id="trSymbolLbl"></small></h3>
+        <div class="seg" id="trSide">
+          <button data-v="BUY" class="on buy">Comprar</button>
+          <button data-v="SELL" class="sell">Vender</button>
+        </div>
+        <div class="seg" id="trType">
+          <button data-v="MARKET" class="on">Mercado</button>
+          <button data-v="LIMIT">Límite</button>
+        </div>
+        <label id="trAmountWrap">Monto a gastar (<span class="q">USDT</span>)
+          <input id="trAmount" type="number" inputmode="decimal" value="20"></label>
+        <label id="trQtyWrap" hidden>Cantidad (<span class="b">BTC</span>)
+          <div class="row"><input id="trQty" class="grow" type="number" inputmode="decimal"><button id="trMax" class="ghost">Todo</button></div></label>
+        <label id="trPriceWrap" hidden>Precio (<span class="q">USDT</span>)
+          <input id="trPrice" type="number" inputmode="decimal"></label>
+        <button id="trSubmit" class="primary buy">Comprar</button>
+      </div>
+
+      <div class="card">
+        <h3>Órdenes abiertas <button id="trRefresh" class="ghost small">↻</button></h3>
+        <div id="trOrders" class="list muted">—</div>
+      </div>
+
+      <div class="card">
+        <h3>Saldos</h3>
+        <div id="trBalances" class="list muted">—</div>
+      </div>
+    </section>
+
+    <!-- ======== BOT ======== -->
+    <section id="tab-bot" class="tab">
+      <div class="note">El bot opera mientras la app esté abierta (la pantalla se mantiene encendida). Si cierras la app, la orden OCO sigue protegiendo tu posición en Binance.</div>
+
+      <div class="card status">
+        <div class="row between"><h3>Estado</h3><span id="bsSignal" class="pill">—</span></div>
+        <div class="grid2" id="bsGrid"></div>
+        <div id="bsPosition"></div>
+        <div class="row gap">
+          <button id="bsStart" class="primary grow">▶ Iniciar bot</button>
+          <button id="bsClose" class="danger" hidden>Cerrar posición</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Estrategia</h3>
+        <p class="hint">Compra cuando la EMA rápida cruza por encima de la lenta (si el RSI no está sobrecomprado). Vende en el cruce contrario, o antes si toca el stop-loss o el take-profit.</p>
+        <form id="cfgForm" class="grid2">
+          <label>Par<input name="symbol" autocapitalize="characters"></label>
+          <label>Velas<select name="interval"><option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></label>
+          <label>EMA rápida<input name="emaFast" type="number" min="2"></label>
+          <label>EMA lenta<input name="emaSlow" type="number" min="3"></label>
+          <label>Periodo RSI<input name="rsiPeriod" type="number" min="2"></label>
+          <label>RSI máx. para comprar<input name="rsiMax" type="number" min="1" max="101"></label>
+          <label>Monto por operación<input name="amount" type="number" step="any" min="1"></label>
+          <label>Stop-loss %<input name="slPct" type="number" step="any" min="0.1"></label>
+          <label>Take-profit %<input name="tpPct" type="number" step="any" min="0.1"></label>
+          <label>Máx. operaciones/día<input name="maxTrades" type="number" min="1"></label>
+          <label>Pérdida máx./día (0 = sin límite)<input name="maxDailyLoss" type="number" step="any" min="0"></label>
+          <label>Revisar cada (seg)<input name="tickSec" type="number" min="5"></label>
+          <label class="check span2"><input name="useOco" type="checkbox"> Colocar OCO en Binance (SL/TP protegido aunque cierres la app)</label>
+        </form>
+        <button id="btRun" class="ghost wide">🧪 Probar con historial (backtest)</button>
+        <div id="btOut"></div>
+      </div>
+
+      <div class="card">
+        <h3>Operaciones del bot <button id="bsReset" class="ghost small">Borrar</button></h3>
+        <div id="bsTrades" class="list muted">Aún no hay operaciones</div>
+      </div>
+
+      <div class="card">
+        <h3>Registro</h3>
+        <div id="bsLog" class="log"></div>
+      </div>
+    </section>
+
+    <!-- ======== AJUSTES ======== -->
+    <section id="tab-settings" class="tab">
+      <div class="card">
+        <h3>Entorno</h3>
+        <div class="seg" id="envSeg">
+          <button data-v="testnet" class="on">Testnet (dinero ficticio)</button>
+          <button data-v="real">Cuenta real</button>
+        </div>
+        <p class="hint" id="envHint"></p>
+      </div>
+      <div class="card">
+        <h3>Claves API <small id="keysEnvLbl"></small></h3>
+        <label>API Key<input id="apiKey" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label>Secret Key<input id="apiSecret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <div class="row gap">
+          <button id="keysSave" class="primary grow">Guardar y probar</button>
+          <button id="keysClear" class="ghost">Borrar</button>
+        </div>
+        <div id="keysOut" class="hint"></div>
+      </div>
+      <div class="card hint">
+        <h3>Seguridad</h3>
+        <ul>
+          <li>Crea la clave solo con permiso de <b>Spot &amp; Margin Trading</b>. Nunca actives <b>retiros</b>.</li>
+          <li>Las claves se guardan solo en este teléfono.</li>
+          <li>Prueba la estrategia en Testnet durante días antes de usar dinero real. Ninguna estrategia garantiza ganancias.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="market" class="on"><span>📊</span>Mercado</button>
+    <button data-tab="trade"><span>💱</span>Operar</button>
+    <button data-tab="bot"><span>🤖</span>Bot</button>
+    <button data-tab="settings"><span>⚙️</span>Ajustes</button>
+  </nav>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

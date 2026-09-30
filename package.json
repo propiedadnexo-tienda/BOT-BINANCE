@@ -1,0 +1,20 @@
+{
+  "name": "bot-binance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App Android para operar en Binance con bot automático (EMA + RSI)",
+  "scripts": {
+    "android:add": "npx cap add android",
+    "sync": "npx cap sync android",
+    "open": "npx cap open android",
+    "apk": "npx cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "latest",
+    "@capacitor/core": "latest",
+    "@capacitor-community/keep-awake": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "latest"
+  }
+}
