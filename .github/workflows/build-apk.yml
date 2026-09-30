@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,8 +36,21 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../BotBinance.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: bot-binance-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: BotBinance.apk
+
+      # Publica el APK como descarga directa (sin zip ni inicio de sesión):
+      # https://github.com/<usuario>/<repo>/releases/latest/download/BotBinance.apk
+      - name: Publicar descarga directa
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          gh release create "$TAG" BotBinance.apk \
+            --title "Bot Binance $TAG" \
+            --notes "Toca BotBinance.apk para descargar e instalar en Android." \
+            --latest
