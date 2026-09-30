@@ -9,6 +9,14 @@ export const FUTURES_URLS = {
   testnet: 'https://demo-fapi.binance.com',
 };
 
+// Acciones tokenizadas como perpetuos (TradFi). Se detectan por tipo de subyacente o por ticker conocido.
+const STOCK_TICKERS = new Set(['TSLA', 'NVDA', 'AAPL', 'META', 'GOOGL', 'GOOG', 'MSFT', 'AMZN', 'NFLX', 'AMD', 'COIN', 'MSTR', 'HOOD', 'PLTR', 'INTC', 'ORCL', 'BABA', 'TSM', 'CRCL', 'SPY', 'QQQ']);
+export function isStock(s) {
+  const type = String(s.underlyingType || '').toUpperCase();
+  const sub = (s.underlyingSubType || []).join(' ');
+  return (type && !['COIN', 'INDEX', 'PREMARKET'].includes(type)) || /stock|equit|tradfi/i.test(sub) || STOCK_TICKERS.has(s.baseAsset);
+}
+
 export class BinanceFutures extends Binance {
   constructor(opts) {
     super(opts);
@@ -48,6 +56,23 @@ export class BinanceFutures extends Binance {
     return info;
   }
 
+  // Todos los perpetuos operables, con categoría Cripto / Acciones
+  async markets() {
+    if (!this._allInfo) this._allInfo = await this._req('GET', '/fapi/v1/exchangeInfo');
+    const t24 = await this._req('GET', '/fapi/v1/ticker/24hr');
+    const tick = new Map(t24.map(t => [t.symbol, t]));
+    return (this._allInfo.symbols || [])
+      .filter(s => s.status === 'TRADING' && s.contractType === 'PERPETUAL' && (s.marginAsset || s.quoteAsset) === 'USDT')
+      .map(s => {
+        const t = tick.get(s.symbol) || {};
+        return {
+          symbol: s.symbol, base: s.baseAsset, category: isStock(s) ? 'stock' : 'crypto',
+          price: +t.lastPrice || 0, change: +t.priceChangePercent || 0, volume: +t.quoteVolume || 0,
+        };
+      })
+      .sort((a, b) => b.volume - a.volume);
+  }
+
   // ---------- Cuenta ----------
   account() { return this._req('GET', '/fapi/v3/account', {}, true); }
   balances() { return this._req('GET', '/fapi/v3/balance', {}, true); }
@@ -61,7 +86,8 @@ export class BinanceFutures extends Binance {
     const rows = await this._req('GET', '/fapi/v3/positionRisk', symbol ? { symbol } : {}, true);
     return rows.filter(r => +r.positionAmt !== 0).map(r => ({
       symbol: r.symbol,
-      side: +r.positionAmt > 0 ? 'LONG' : 'SHORT',
+      positionSide: r.positionSide || 'BOTH',
+      side: r.positionSide && r.positionSide !== 'BOTH' ? r.positionSide : (+r.positionAmt > 0 ? 'LONG' : 'SHORT'),
       amt: +r.positionAmt,
       qty: String(r.positionAmt).replace('-', ''),
       entry: +r.entryPrice,
@@ -72,9 +98,23 @@ export class BinanceFutures extends Binance {
       notional: Math.abs(+r.notional || 0),
     }));
   }
-  async position(symbol) { return (await this.positions(symbol)).find(p => p.symbol === symbol) || null; }
+  async position(symbol, side) {
+    return (await this.positions(symbol)).find(p => p.symbol === symbol && (!side || p.side === side)) || null;
+  }
 
-  // Modo de posición "una dirección" (one-way): requerido por el bot
+  // Modo cobertura (hedge): permite tener LONG y SHORT del mismo activo a la vez (un bot para cada lado)
+  async isHedge() { return !!(await this._req('GET', '/fapi/v1/positionSide/dual', {}, true)).dualSidePosition; }
+  async ensureHedge() {
+    if (await this.isHedge()) return;
+    try { await this._req('POST', '/fapi/v1/positionSide/dual', { dualSidePosition: 'true' }, true); }
+    catch (e) {
+      if (e.code === -4059) return;
+      if (e.code === -4067 || e.code === -4068) throw new Error('Para usar bots Long y Short a la vez, Binance necesita el "modo cobertura". Cierra primero tus posiciones y órdenes abiertas de Futuros (pestaña Operar) y vuelve a iniciar.');
+      throw e;
+    }
+  }
+
+  // Modo de posición "una dirección" (one-way)
   async ensureOneWay() {
     const d = await this._req('GET', '/fapi/v1/positionSide/dual', {}, true);
     if (d.dualSidePosition) {
@@ -94,18 +134,28 @@ export class BinanceFutures extends Binance {
 
   // ---------- Órdenes ----------
   order(params) { return this._req('POST', '/fapi/v1/order', { newOrderRespType: 'RESULT', ...params }, true); }
-  marketOpen(symbol, side, quantity) { return this.order({ symbol, side, type: 'MARKET', quantity }); }
-  marketClose(symbol, side, quantity) { return this.order({ symbol, side, type: 'MARKET', quantity, reduceOnly: 'true' }); }
+  // posSide: 'LONG' | 'SHORT' en modo cobertura; omitido en modo una dirección
+  marketOpen(symbol, side, quantity, posSide) {
+    return this.order({ symbol, side, type: 'MARKET', quantity, ...(posSide ? { positionSide: posSide } : {}) });
+  }
+  // Cierra una posición: side = lado de la posición (LONG/SHORT)
+  marketClose(symbol, side, quantity, hedge = false) {
+    const orderSide = side === 'LONG' ? 'SELL' : 'BUY';
+    return this.order(hedge
+      ? { symbol, side: orderSide, type: 'MARKET', quantity, positionSide: side }
+      : { symbol, side: orderSide, type: 'MARKET', quantity, reduceOnly: 'true' });
+  }
   userTrades(symbol, startTime) { return this._req('GET', '/fapi/v1/userTrades', { symbol, startTime, limit: 100 }, true); }
   openOrders(symbol) { return this._req('GET', '/fapi/v1/openOrders', { symbol }, true); }
 
   // Stop-loss / take-profit que cierran TODA la posición al tocarse (se ejecutan en Binance aunque la app esté cerrada)
-  algoClose({ symbol, side, type, triggerPrice }) {
+  algoClose({ symbol, side, type, triggerPrice, positionSide }) {
     return this._req('POST', '/fapi/v1/algoOrder', {
-      algoType: 'CONDITIONAL', symbol, side, type, triggerPrice,
+      algoType: 'CONDITIONAL', symbol, side, type, triggerPrice, ...(positionSide ? { positionSide } : {}),
       closePosition: 'true', workingType: 'MARK_PRICE', priceProtect: 'true',
     }, true);
   }
+  cancelAlgo(algoId) { return this._req('DELETE', '/fapi/v1/algoOrder', { algoId }, true); }
   getAlgo(algoId) { return this._req('GET', '/fapi/v1/algoOrder', { algoId }, true); }
   openAlgos(symbol) { return this._req('GET', '/fapi/v1/openAlgoOrders', { symbol }, true); }
   cancelAllAlgos(symbol) { return this._req('DELETE', '/fapi/v1/algoOpenOrders', { symbol }, true); }

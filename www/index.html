@@ -22,6 +22,7 @@
     <section id="tab-market" class="tab active">
       <div class="row">
         <input id="mkSymbol" class="grow" value="BTCUSDT" autocapitalize="characters" aria-label="Par">
+        <button id="mkPick" class="ghost" aria-label="Elegir activo">🔍</button>
         <select id="mkInterval" aria-label="Temporalidad">
           <option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option>
         </select>
@@ -97,7 +98,7 @@
     <section id="tab-bot" class="tab">
       <div class="note" id="botNote"></div>
 
-      <div class="card status">
+      <div class="card status spot-only">
         <div class="row between"><h3>Estado</h3><span id="bsSignal" class="pill">—</span></div>
         <div class="grid2" id="bsGrid"></div>
         <div id="bsPosition"></div>
@@ -107,7 +108,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card spot-only">
         <h3>Estrategia</h3>
         <p class="hint" id="stratHint"></p>
         <form id="cfgForm" class="grid2">
@@ -132,14 +133,38 @@
         <div id="btOut"></div>
       </div>
 
-      <div class="card">
+      <div class="card spot-only">
         <h3>Operaciones del bot <button id="bsReset" class="ghost small">Borrar</button></h3>
         <div id="bsTrades" class="list muted">Aún no hay operaciones</div>
       </div>
 
-      <div class="card">
+      <div class="card spot-only">
         <h3>Registro</h3>
         <div id="bsLog" class="log"></div>
+      </div>
+
+      <!-- ===== Futuros: varios bots ===== -->
+      <div class="card fut-only">
+        <div class="row between"><h3>Panel de bots</h3><span id="mbPill" class="pill">Apagados</span></div>
+        <div class="grid2" id="mbGrid" style="gap:8px;margin-top:10px"></div>
+        <div class="grid2">
+          <label>Pérdida máx. del día (todos los bots, USDT)<input id="mbMaxLoss" type="number" min="0" step="any"></label>
+          <label>Revisar cada (seg)<input id="mbTick" type="number" min="10"></label>
+        </div>
+        <button id="mbStart" class="primary wide">▶ Iniciar todos</button>
+      </div>
+      <div class="row gap fut-only" style="margin:0 0 12px">
+        <button id="mbAdd" class="ghost grow">＋ Agregar bot</button>
+        <button id="mbPair" class="ghost grow">⚡ Crear Long + Short</button>
+      </div>
+      <div id="mbList" class="fut-only"></div>
+      <div class="card fut-only">
+        <h3>Operaciones de los bots <button id="mbReset" class="ghost small">Borrar</button></h3>
+        <div id="mbTrades" class="list muted">Aún no hay operaciones</div>
+      </div>
+      <div class="card fut-only">
+        <h3>Registro</h3>
+        <div id="mbLog" class="log"></div>
       </div>
     </section>
 
@@ -189,6 +214,48 @@
     <button data-tab="bot"><span>🤖</span>Bot</button>
     <button data-tab="settings"><span>⚙️</span>Ajustes</button>
   </nav>
+
+  <div id="picker" class="sheet" hidden>
+    <div class="sheet-box">
+      <div class="row between"><h3>Elegir activo</h3><button id="pkClose" class="ghost small">✕</button></div>
+      <input id="pkSearch" placeholder="Buscar: BTC, ETH, TSLA, NVDA…" autocapitalize="characters" autocomplete="off">
+      <div class="seg" id="pkTabs">
+        <button data-v="all" class="on">Todos</button>
+        <button data-v="crypto">Cripto</button>
+        <button data-v="stock">Acciones</button>
+      </div>
+      <div id="pkList" class="pk-list"><p class="hint">Cargando…</p></div>
+    </div>
+  </div>
+
+  <div id="editor" class="sheet" hidden>
+    <div class="sheet-box">
+      <div class="row between"><h3 id="edTitle">Nuevo bot</h3><button id="edClose" class="ghost small">✕</button></div>
+      <label>Activo<button id="edSymbol" type="button" class="ghost wide" style="margin-top:4px;text-align:left">BTCUSDT</button></label>
+      <div class="seg" id="edDir">
+        <button data-v="LONG" class="on buy">📈 Long (gana si sube)</button>
+        <button data-v="SHORT" class="sell">📉 Short (gana si baja)</button>
+      </div>
+      <form id="edForm" class="grid2">
+        <label>Velas<select name="interval"><option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select></label>
+        <label>Margen (USDT)<input name="amount" type="number" step="any" min="1"></label>
+        <label>Apalancamiento (x)<input name="leverage" type="number" min="1" max="20"></label>
+        <label>Máx. operaciones/día<input name="maxTrades" type="number" min="1"></label>
+        <label>Stop-loss %<input name="slPct" type="number" step="any" min="0.1"></label>
+        <label>Take-profit %<input name="tpPct" type="number" step="any" min="0.1"></label>
+        <label>EMA rápida<input name="emaFast" type="number" min="2"></label>
+        <label>EMA lenta<input name="emaSlow" type="number" min="3"></label>
+        <label>Periodo RSI<input name="rsiPeriod" type="number" min="2"></label>
+        <label><span id="edRsiLbl">RSI máx. para abrir</span><input name="rsiLimit" type="number" min="-1" max="101"></label>
+      </form>
+      <p class="hint" id="edInfo"></p>
+      <div id="edBt"></div>
+      <div class="row gap">
+        <button id="edTest" class="ghost">🧪 Probar</button>
+        <button id="edSave" class="primary grow">Guardar bot</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
   <script type="module" src="js/app.js"></script>

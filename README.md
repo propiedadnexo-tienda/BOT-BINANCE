@@ -18,17 +18,22 @@ App para el celular que muestra el mercado, permite operar a mano y ejecuta un *
 - Límites de seguridad: máximo de operaciones por día y pérdida diaria máxima (detiene el bot).
 - Todos los parámetros son editables. Valores por defecto: BTCUSDT, velas 15m, EMA 9/21, RSI 14 < 70, 20 USDT por operación, SL 1.5 %, TP 3 %.
 
-## Modo Futuros (long + short)
-En **Ajustes → Mercado → Futuros** el bot opera contratos perpetuos USDⓈ-M y gana en ambas direcciones:
-- **Cruce alcista** → cierra el short (si hay) y abre **LONG** si el RSI está bajo el máximo (70).
-- **Cruce bajista** → cierra el long y abre **SHORT** si el RSI está sobre el mínimo (30).
-- Cada posición lleva **stop-loss y take-profit en Binance** (Algo Orders con cierre total), activos aunque cierres la app.
-- Margen **aislado**, modo **una dirección**, apalancamiento configurable (por defecto 2x, máximo 20x).
-- El monto es el **margen** por operación: con 100 USDT × 2x la posición es de 200 USDT. En BTCUSDT la posición mínima es 100 USDT; la app te dice el margen mínimo si no alcanza.
-- En la pestaña **Operar** ves saldo, posiciones abiertas (con botón cerrar) y puedes abrir long/short manual.
-- Claves de prueba: **Demo Trading** de Binance (`demo.binance.com` → Futuros → Gestión de API). Son distintas de las de Spot Testnet.
+## Modo Futuros: varios bots Long y Short
+En **Ajustes → Mercado → Futuros** puedes tener **hasta 10 bots a la vez** sobre contratos perpetuos USDⓈ-M,
+de **criptomonedas y acciones** (Tesla, NVIDIA, Apple, Meta, Google, Microsoft, Amazon… según disponibilidad en tu cuenta).
 
-⚠️ El apalancamiento multiplica ganancias **y pérdidas**: con 2x, un stop-loss de 1.5 % es −3 % del margen.
+- Cada bot opera **un activo** en **una dirección**:
+  - **Bot LONG** (gana si sube): abre en el cruce alcista de EMAs (si RSI < límite) y cierra en el cruce bajista.
+  - **Bot SHORT** (gana si baja): abre en el cruce bajista (si RSI > límite) y cierra en el cruce alcista.
+- **⚡ Crear Long + Short** crea los dos bots de un activo en un toque. **＋ Agregar bot** crea uno a medida.
+- 🔍 **Selector de activos** con buscador y pestañas **Cripto / Acciones**, con precio y variación de 24 h.
+- La cuenta se pone en **modo cobertura (hedge)** para que Long y Short del mismo activo convivan.
+- Cada posición lleva su **stop-loss y take-profit en Binance** (Algo Orders). Cancelar la protección de un bot no toca la de su pareja.
+- **Pérdida máxima del día** global: si la suma de todos los bots la alcanza, se detienen todos.
+- Binance usa **un solo apalancamiento por activo**: el bot Long y el Short de un mismo activo comparten el apalancamiento.
+- Claves de prueba: **Demo Trading** (`demo.binance.com` → Futuros → Gestión de API).
+
+⚠️ El apalancamiento multiplica ganancias **y pérdidas**. Con 10 bots × 100 USDT necesitas ~1000 USDT de margen disponible.
 
 ### Importante: cuándo corre el bot
 Android pausa las apps en segundo plano, así que **el bot revisa el mercado solo mientras la app está abierta**; mientras corre, la app mantiene la pantalla encendida. Lo recomendable es dejar el celular cargando con la app abierta. Si la cierras, la OCO sigue protegiendo la posición abierta, y al volver a abrir la app el bot se reanuda solo.

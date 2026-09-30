@@ -164,6 +164,7 @@ export function backtestFutures(candles, cfg) {
     if (!x) continue;
     const want = x === 'UP' ? 'LONG' : 'SHORT';
     if (pos && pos.side !== want) close(c.c, c.t, 'Cruce');
+    if (cfg.direction && cfg.direction !== want) continue; // bot solo-long o solo-short
     if (!pos && rsiAllows(want, ind.rsi[i], cfg)) {
       pos = { side: want, entry: c.c, t: c.t, ...slTpPrices(want, c.c, cfg) };
     }

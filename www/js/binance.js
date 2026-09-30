@@ -115,6 +115,14 @@ export class Binance {
     return rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5], ct: r[6] }));
   }
 
+  // Pares en USDT operables en Spot, ordenados por volumen
+  async markets() {
+    const t24 = await this._req('GET', '/api/v3/ticker/24hr');
+    return t24.filter(t => /USDT$/.test(t.symbol) && +t.lastPrice > 0)
+      .map(t => ({ symbol: t.symbol, base: t.symbol.replace(/USDT$/, ''), category: 'crypto', price: +t.lastPrice, change: +t.priceChangePercent, volume: +t.quoteVolume }))
+      .sort((a, b) => b.volume - a.volume);
+  }
+
   async price(symbol) {
     const d = await this._req('GET', '/api/v3/ticker/price', { symbol });
     return +d.price;

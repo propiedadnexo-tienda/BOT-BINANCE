@@ -128,3 +128,28 @@ body.futures .spot-only { display: none !important; }
 
 .badges { flex-wrap: wrap; justify-content: flex-end; }
 .brand { white-space: nowrap; }
+
+.sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
+.sheet[hidden] { display: none; }
+.sheet-box { background: var(--panel); border: 1px solid var(--line); border-radius: 18px 18px 0 0; width: 100%; max-width: 720px; max-height: 88vh; overflow-y: auto; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+.sheet-box > input { margin-top: 10px; }
+.pk-list { margin-top: 8px; max-height: 58vh; overflow-y: auto; }
+.pk-item { display: flex; justify-content: space-between; align-items: center; padding: 11px 4px; border-top: 1px solid var(--line); cursor: pointer; }
+.pk-item:active { background: var(--panel2); }
+.pk-item b { font-size: 15px; }
+.tag { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: #1f2440; color: #9fb0ff; margin-left: 6px; vertical-align: middle; }
+.botcard { padding: 12px 14px; }
+.botcard .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.botcard .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.botcard .st { margin-top: 8px; font-size: 13px; }
+.botcard .acts { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.botcard .acts button { padding: 6px 10px; font-size: 12px; }
+.botcard.paused { opacity: .6; }
+.switch { position: relative; width: 44px; height: 26px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 99px; transition: .2s; }
+.switch span::before { content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+.switch input:checked + span { background: var(--up); }
+.switch input:checked + span::before { transform: translateX(18px); }
+#mbStart.stop { background: var(--panel2); color: var(--down); border: 1px solid var(--down); }
+#picker { z-index: 30; }
