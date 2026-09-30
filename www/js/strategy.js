@@ -1,5 +1,11 @@
 // Estrategia compartida por los bots en vivo y por el backtest (así lo que pruebas es lo que opera).
 //
+// Tres familias (campo b.strategy):
+//   'ema'      → cruce / tendencia de medias móviles (versión original)
+//   'breakout' → ruptura del máximo/mínimo de N velas (canal Donchian) con stop que sigue al precio (trailing)
+//   'meanrev'  → rebote a la media: compra caídas exageradas (bajo la banda de Bollinger) en tendencia alcista
+//                y vende subidas exageradas en tendencia bajista; sale al volver a la media
+//
 // Entrada (según la dirección del bot):
 //   - modo 'cross': solo en el cruce de EMAs a favor.
 //   - modo 'trend': en cuanto la EMA rápida está del lado correcto de la lenta (entra ya),
@@ -24,11 +30,40 @@ export function atr(candles, period = 14) {
   return out;
 }
 
+function rolling(arr, n, fn) {
+  const out = new Array(arr.length).fill(null);
+  for (let i = n - 1; i < arr.length; i++) out[i] = fn(arr.slice(i - n + 1, i + 1));
+  return out;
+}
+// Máximo / mínimo de las N velas ANTERIORES (sin incluir la actual)
+function donchian(candles, n) {
+  const hi = new Array(candles.length).fill(null), lo = new Array(candles.length).fill(null);
+  for (let i = n; i < candles.length; i++) {
+    let h = -Infinity, l = Infinity;
+    for (let k = i - n; k < i; k++) { if (candles[k].h > h) h = candles[k].h; if (candles[k].l < l) l = candles[k].l; }
+    hi[i] = h; lo[i] = l;
+  }
+  return { hi, lo };
+}
+
 export function indicators(candles, b) {
   const closes = candles.map(c => c.c);
+  const strat = b.strategy || 'ema';
+  const extra = {};
+  if (strat === 'breakout') {
+    const en = donchian(candles, b.entryN || 20), ex = donchian(candles, b.exitN || 10);
+    Object.assign(extra, { dcHi: en.hi, dcLo: en.lo, exHi: ex.hi, exLo: ex.lo });
+  }
+  if (strat === 'meanrev') {
+    const n = b.bbN || 20, k = b.bbK || 2;
+    const mid = rolling(closes, n, w => w.reduce((a, x) => a + x, 0) / n);
+    const sd = rolling(closes, n, w => { const m = w.reduce((a, x) => a + x, 0) / n; return Math.sqrt(w.reduce((a, x) => a + (x - m) ** 2, 0) / n); });
+    Object.assign(extra, { mid, bbUp: mid.map((m, i) => m == null ? null : m + k * sd[i]), bbLo: mid.map((m, i) => m == null ? null : m - k * sd[i]) });
+  }
   return {
-    fast: ema(closes, b.emaFast),
-    slow: ema(closes, b.emaSlow),
+    ...extra,
+    fast: ema(closes, b.emaFast || 9),
+    slow: ema(closes, b.emaSlow || 21),
     rsi: rsi(closes, b.rsiPeriod || 14),
     trend: b.trendEma > 0 ? ema(closes, b.trendEma) : null,
     atr: atr(candles, 14),
@@ -37,7 +72,7 @@ export function indicators(candles, b) {
 }
 
 // Velas necesarias para calcular todo con precisión
-export const candlesNeeded = b => Math.min(1000, Math.max((b.trendEma || 0) * 3, b.emaSlow * 4, 200));
+export const candlesNeeded = b => Math.min(1000, Math.max((b.trendEma || 0) * 3, (b.emaSlow || 21) * 4, (b.entryN || 0) * 3, 200));
 
 const dirOf = b => (b.direction === 'SHORT' ? -1 : 1);
 
@@ -54,8 +89,21 @@ export function crossDir(ind, i) {
 export function entryBlock(ind, i, b, candlesSinceExit = Infinity) {
   const d = dirOf(b);
   const f = ind.fast[i], s = ind.slow[i], c = ind.close[i], r = ind.rsi[i], a = ind.atr[i];
-  if (f == null || s == null || a == null) return 'calculando indicadores';
-  if (b.entryMode === 'trend') {
+  if (a == null) return 'calculando indicadores';
+  const strat = b.strategy || 'ema';
+  if (strat === 'breakout') {
+    const lvl = d > 0 ? ind.dcHi[i] : ind.dcLo[i];
+    if (lvl == null) return 'calculando canal';
+    if ((c - lvl) * d <= 0) return d > 0 ? `esperando ruptura del máximo de ${b.entryN || 20} velas (${lvl.toPrecision(6)})` : `esperando ruptura del mínimo de ${b.entryN || 20} velas (${lvl.toPrecision(6)})`;
+    if (candlesSinceExit < (b.cooldown ?? 0)) return `pausa tras la última salida (${candlesSinceExit}/${b.cooldown} velas)`;
+  } else if (strat === 'meanrev') {
+    const band = d > 0 ? ind.bbLo[i] : ind.bbUp[i];
+    if (band == null) return 'calculando bandas';
+    if ((band - c) * d <= 0) return d > 0 ? 'esperando una caída exagerada (bajo la banda inferior)' : 'esperando una subida exagerada (sobre la banda superior)';
+    if (candlesSinceExit < (b.cooldown ?? 0)) return `pausa tras la última salida (${candlesSinceExit}/${b.cooldown} velas)`;
+  } else if (f == null || s == null) {
+    return 'calculando indicadores';
+  } else if (b.entryMode === 'trend') {
     if ((f - s) * d <= 0) return d > 0 ? 'EMA rápida bajo la lenta (sin tendencia alcista)' : 'EMA rápida sobre la lenta (sin tendencia bajista)';
     if (candlesSinceExit < (b.cooldown ?? 3)) return `pausa tras la última salida (${candlesSinceExit}/${b.cooldown ?? 3} velas)`;
     if (b.maxExtAtr > 0 && (c - f) * d > b.maxExtAtr * a) return 'precio muy estirado, espera un retroceso';
@@ -67,20 +115,47 @@ export function entryBlock(ind, i, b, candlesSinceExit = Infinity) {
     if (t == null) return 'calculando tendencia de fondo';
     if ((c - t) * d <= 0) return d > 0 ? `precio bajo la EMA ${b.trendEma} (tendencia de fondo bajista)` : `precio sobre la EMA ${b.trendEma} (tendencia de fondo alcista)`;
   }
-  if (r != null && b.rsiLimit != null) {
+  if (r != null && b.rsiLimit != null && strat === 'meanrev') {
+    if (d > 0 && r > b.rsiLimit) return `RSI ${r.toFixed(0)} aún no está en sobreventa (≤ ${b.rsiLimit})`;
+    if (d < 0 && r < 100 - b.rsiLimit) return `RSI ${r.toFixed(0)} aún no está en sobrecompra (≥ ${100 - b.rsiLimit})`;
+  } else if (r != null && b.rsiLimit != null) {
     if (d > 0 && r >= b.rsiLimit) return `RSI ${r.toFixed(0)} ≥ ${b.rsiLimit} (sobrecompra)`;
     if (d < 0 && r <= b.rsiLimit) return `RSI ${r.toFixed(0)} ≤ ${b.rsiLimit} (sobreventa)`;
   }
   return null;
 }
 
-// Salida por señal: cruce en contra de la dirección del bot
-export const exitSignal = (ind, i, b) => crossDir(ind, i) === -dirOf(b);
+// Salida por señal (al cierre de vela). Devuelve el motivo o null.
+export function exitSignal(ind, i, b, barsInTrade = 0) {
+  const d = dirOf(b), c = ind.close[i];
+  const strat = b.strategy || 'ema';
+  if (strat === 'breakout') {
+    const lvl = d > 0 ? ind.exLo[i] : ind.exHi[i];
+    if (lvl != null && (lvl - c) * d > 0) return `rompió el ${d > 0 ? 'mínimo' : 'máximo'} de ${b.exitN || 10} velas`;
+    return null;
+  }
+  if (strat === 'meanrev') {
+    if (ind.mid[i] != null && (c - ind.mid[i]) * d >= 0) return 'volvió a la media';
+    if (b.maxBars > 0 && barsInTrade >= b.maxBars) return `tiempo máximo (${b.maxBars} velas)`;
+    return null;
+  }
+  return crossDir(ind, i) === -d ? 'cruce en contra' : null;
+}
+
+// Stop que sigue al precio (trailing): nunca retrocede. Devuelve el nuevo stop o null si no cambia.
+export function trailStop(b, pos, ind, i) {
+  if (!(b.trailAtr > 0) || ind.atr[i] == null) return null;
+  const d = dirOf(b);
+  pos.best = pos.best == null ? ind.close[i] : (d > 0 ? Math.max(pos.best, ind.close[i]) : Math.min(pos.best, ind.close[i]));
+  const cand = pos.best - d * b.trailAtr * ind.atr[i];
+  return (cand - pos.sl) * d > 0 ? cand : null;
+}
 
 export function stopsFor(b, entry, atrVal) {
   const d = dirOf(b);
   if (b.stopMode === 'atr' && atrVal > 0) {
-    return { sl: entry - d * b.slAtr * atrVal, tp: entry + d * b.tpAtr * atrVal };
+    // tpAtr = 0 → sin take-profit fijo (se sale por trailing o por señal)
+    return { sl: entry - d * b.slAtr * atrVal, tp: b.tpAtr > 0 ? entry + d * b.tpAtr * atrVal : null };
   }
   return { sl: entry * (1 - d * b.slPct / 100), tp: entry * (1 + d * b.tpPct / 100) };
 }
@@ -113,10 +188,12 @@ export function backtestBot(candles, b, { balance = 5000, feePct = 0.05 } = {}) 
     const c = candles[i];
     if (pos) {
       const hitSl = d > 0 ? c.l <= pos.sl : c.h >= pos.sl;
-      const hitTp = d > 0 ? c.h >= pos.tp : c.l <= pos.tp;
-      if (hitSl) { close(i, d > 0 ? Math.min(c.o, pos.sl) : Math.max(c.o, pos.sl), 'SL'); continue; }
+      const hitTp = pos.tp != null && (d > 0 ? c.h >= pos.tp : c.l <= pos.tp);
+      if (hitSl) { close(i, d > 0 ? Math.min(c.o, pos.sl) : Math.max(c.o, pos.sl), pos.trailed ? 'Trailing' : 'SL'); continue; }
       if (hitTp) { close(i, d > 0 ? Math.max(c.o, pos.tp) : Math.min(c.o, pos.tp), 'TP'); continue; }
-      if (exitSignal(ind, i, b)) { close(i, c.c, 'Cruce'); continue; }
+      if (exitSignal(ind, i, b, i - pos.i)) { close(i, c.c, 'Señal'); continue; }
+      const nt = trailStop(b, pos, ind, i);
+      if (nt != null) { pos.sl = nt; pos.trailed = true; }
     }
     if (!pos && !entryBlock(ind, i, b, i - lastExit)) {
       const { sl, tp } = stopsFor(b, c.c, ind.atr[i]);

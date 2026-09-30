@@ -9,9 +9,9 @@ import path from 'node:path';
 import { backtestBot, combine } from '../www/js/strategy.js';
 
 const ASSETS = (process.env.ASSETS || 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,NVDAUSDT,TSLAUSDT').split(',');
-const INTERVALS = (process.env.INTERVALS || '15m,1h,4h').split(',');
-const MONTHS = +(process.env.MONTHS || 8);
-const OOS_MONTHS = +(process.env.OOS_MONTHS || 3);
+const INTERVALS = (process.env.INTERVALS || '1h,4h').split(',');
+const MONTHS = +(process.env.MONTHS || 20);
+const OOS_MONTHS = +(process.env.OOS_MONTHS || 6);
 const BAL = 5000;
 const FEE = 0.06; // 0.05 % comisión taker + 0.01 % deslizamiento, por lado
 const CACHE = '/tmp/bvdata';
@@ -63,14 +63,19 @@ function load(sym, itv) {
 // Variantes a comparar (todas con gestión de riesgo del 1 % por operación, tope 5x)
 const RISK = { sizeMode: 'risk', riskPct: 1, amount: 500, leverage: 5, rsiPeriod: 14 };
 const VARIANTS = {
-  A_cruce_basico:        { ...RISK, entryMode: 'cross', emaFast: 9, emaSlow: 21, trendEma: 0, stopMode: 'pct', slPct: 1.5, tpPct: 3, rsiL: 70 },
-  B_cruce_filtro200_atr: { ...RISK, entryMode: 'cross', emaFast: 9, emaSlow: 21, trendEma: 200, stopMode: 'atr', slAtr: 1.5, tpAtr: 3, rsiL: 70 },
-  C_tendencia_200_atr15: { ...RISK, entryMode: 'trend', emaFast: 9, emaSlow: 21, trendEma: 200, stopMode: 'atr', slAtr: 1.5, tpAtr: 3, cooldown: 3, maxExtAtr: 1.5, rsiL: 70 },
-  D_tendencia_200_atr2:  { ...RISK, entryMode: 'trend', emaFast: 9, emaSlow: 21, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 4, cooldown: 3, maxExtAtr: 1.5, rsiL: 70 },
-  E_tend_20_50_200_atr2: { ...RISK, entryMode: 'trend', emaFast: 20, emaSlow: 50, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 4, cooldown: 5, maxExtAtr: 2, rsiL: 75 },
-  F_cruce_20_50_200_atr2:{ ...RISK, entryMode: 'cross', emaFast: 20, emaSlow: 50, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 4, rsiL: 75 },
+  // Referencia: la mejor de la ronda 1
+  EMA_cruce_20_50_200:   { ...RISK, strategy: 'ema', entryMode: 'cross', emaFast: 20, emaSlow: 50, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 4, rsiL: 75 },
+  // Seguir tendencias: ruptura de canal + stop que sigue al precio, sin take-profit fijo
+  BO_20_10_trail3:       { ...RISK, strategy: 'breakout', entryN: 20, exitN: 10, stopMode: 'atr', slAtr: 2, tpAtr: 0, trailAtr: 3, trendEma: 0 },
+  BO_20_10_trail3_f200:  { ...RISK, strategy: 'breakout', entryN: 20, exitN: 10, stopMode: 'atr', slAtr: 2, tpAtr: 0, trailAtr: 3, trendEma: 200 },
+  BO_55_20_trail3:       { ...RISK, strategy: 'breakout', entryN: 55, exitN: 20, stopMode: 'atr', slAtr: 2.5, tpAtr: 0, trailAtr: 3.5, trendEma: 0 },
+  BO_55_20_trail3_f200:  { ...RISK, strategy: 'breakout', entryN: 55, exitN: 20, stopMode: 'atr', slAtr: 2.5, tpAtr: 0, trailAtr: 3.5, trendEma: 200 },
+  // Rebote a la media (a favor de la tendencia de fondo)
+  MR_bb20_2_rsi30_f200:  { ...RISK, strategy: 'meanrev', bbN: 20, bbK: 2, rsiPeriod: 14, rsiLimit: 30, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 0, maxBars: 30, cooldown: 2 },
+  MR_bb20_2_f200:        { ...RISK, strategy: 'meanrev', bbN: 20, bbK: 2, rsiPeriod: 14, rsiLimit: 50, trendEma: 200, stopMode: 'atr', slAtr: 2, tpAtr: 0, maxBars: 30, cooldown: 2 },
+  MR_bb20_25_sinfiltro:  { ...RISK, strategy: 'meanrev', bbN: 20, bbK: 2.5, rsiPeriod: 14, rsiLimit: 35, trendEma: 0, stopMode: 'atr', slAtr: 2.5, tpAtr: 0, maxBars: 30, cooldown: 2 },
 };
-const botCfg = (v, dir) => ({ ...v, direction: dir, rsiLimit: dir === 'LONG' ? v.rsiL : 100 - v.rsiL });
+const botCfg = (v, dir) => ({ ...v, direction: dir, rsiLimit: v.strategy === 'meanrev' ? v.rsiLimit : (v.rsiL ? (dir === 'LONG' ? v.rsiL : 100 - v.rsiL) : null) });
 
 const fmt = (n, d = 1) => (n == null || !isFinite(n) ? (n === Infinity ? '∞' : '—') : (+n).toFixed(d));
 const results = { generated: new Date().toISOString(), months: MONTHS, oosMonths: OOS_MONTHS, balance: BAL, fee: FEE, data: {}, grid: [] };
@@ -105,6 +110,7 @@ for (const [vname, v] of Object.entries(VARIANTS)) for (const itv of INTERVALS) 
     variant: vname, interval: itv,
     is: { n: cis.count, win: cis.winRate, pf: cis.profitFactor, pnl: cis.totalPnl, dd: cis.maxDD },
     oos: { n: coos.count, win: coos.winRate, pf: coos.profitFactor, pnl: coos.totalPnl, dd: coos.maxDD },
+    byDir: Object.fromEntries(['LONG', 'SHORT'].map(dr => { const x = combine(per.filter(p => p.dir === dr && p.oos).map(p => p.oos)); return [dr, { n: x.count, pf: x.profitFactor, pnl: x.totalPnl }]; })),
     perBot: per.map(p => {
       const o = p.oos ? combine([p.oos]) : null;
       return { sym: p.sym, dir: p.dir, isPnl: p.is.totalPnl, isPf: p.is.profitFactor, isN: p.is.count, oosPnl: o?.totalPnl, oosPf: o?.profitFactor, oosN: o?.count };
@@ -118,9 +124,9 @@ let md = `# Investigación de estrategias con datos reales de Binance Futuros\n\
 md += `Saldo de referencia ${BAL} USDT · riesgo 1 % por operación · tope 5x · comisión+deslizamiento ${FEE}% por lado.\n`;
 md += `Entrenamiento: meses anteriores a ${new Date(split).toISOString().slice(0, 10)} · Validación: desde esa fecha (${OOS_MONTHS} meses).\n\n`;
 md += `Datos: ${Object.entries(results.data).map(([k, v]) => `${k} (${v.candles} velas, ${v.from}→${v.to})`).join(', ')}\n\n`;
-md += '## Todas las variantes (suma de todos los activos, Long y Short)\n\n| Variante | Velas | Ops entr. | PF entr. | PnL entr. | Máx. caída entr. | Ops valid. | Win % valid. | PF valid. | PnL valid. | Máx. caída valid. |\n|---|---|---|---|---|---|---|---|---|---|---|\n';
-for (const g of results.grid) md += `| ${g.variant} | ${g.interval} | ${g.is.n} | ${fmt(g.is.pf, 2)} | ${fmt(g.is.pnl, 0)} | ${fmt(g.is.dd, 0)} | ${g.oos.n} | ${fmt(g.oos.win, 0)} | ${fmt(g.oos.pf, 2)} | ${fmt(g.oos.pnl, 0)} | ${fmt(g.oos.dd, 0)} |\n`;
-for (const g of results.grid.slice(0, 3)) {
+md += '## Todas las variantes (suma de todos los activos, Long y Short)\n\n| Variante | Velas | Ops entr. | PF entr. | PnL entr. | Máx. caída entr. | Ops valid. | Win % valid. | PF valid. | PnL valid. | Máx. caída valid. | PnL valid. LONG | PnL valid. SHORT |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n';
+for (const g of results.grid) md += `| ${g.variant} | ${g.interval} | ${g.is.n} | ${fmt(g.is.pf, 2)} | ${fmt(g.is.pnl, 0)} | ${fmt(g.is.dd, 0)} | ${g.oos.n} | ${fmt(g.oos.win, 0)} | ${fmt(g.oos.pf, 2)} | ${fmt(g.oos.pnl, 0)} | ${fmt(g.oos.dd, 0)} | ${fmt(g.byDir.LONG.pnl, 0)} | ${fmt(g.byDir.SHORT.pnl, 0)} |\n`;
+for (const g of results.grid.slice(0, 4)) {
   md += `\n## Detalle por bot: ${g.variant} ${g.interval}\n\n| Activo | Dir. | Ops entr. | PF entr. | PnL entr. | Ops valid. | PF valid. | PnL valid. |\n|---|---|---|---|---|---|---|---|\n`;
   for (const p of g.perBot) md += `| ${p.sym} | ${p.dir} | ${p.isN} | ${fmt(p.isPf, 2)} | ${fmt(p.isPnl, 0)} | ${p.oosN ?? '—'} | ${fmt(p.oosPf, 2)} | ${fmt(p.oosPnl, 0)} |\n`;
 }
